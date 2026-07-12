@@ -1,0 +1,42 @@
+id: dmhy
+name: 动漫花园
+type: public
+language: zh-CN
+links:
+  - https://share.dmhy.org/
+
+caps:
+  categorymappings:
+    - {id: "2", cat: TV/Anime, desc: "動畫"}
+    - {id: "31", cat: TV/Anime, desc: "季度全集"}
+  modes:
+    search: [q]
+
+search:
+  paths:
+    - path: "topics/list"
+  inputs:
+    keyword: "{{ .Keywords }}"
+    sort_id: "0"
+  rows:
+    selector: "table#topic_list tbody tr:has(a[href^=\"magnet:?\"])"
+    after: 0
+  fields:
+    title:
+      selector: "td:nth-child(3) a"
+    download:
+      selector: "a[href^=\"magnet:?\"]"
+      attribute: href
+    size:
+      selector: "td:nth-child(5)"
+    date:
+      selector: "td:nth-child(2) span"
+    seeders:
+      selector: "td:nth-child(6)"
+    leechers:
+      selector: "td:nth-child(7)"
+    category:
+      selector: "td:nth-child(1)"
+    page:
+      selector: "td:nth-child(3) a"
+      attribute: href
