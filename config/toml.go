@@ -29,7 +29,8 @@ type TOMLAuthConfig struct {
 
 // TOMLServerConfig represents server configuration
 type TOMLServerConfig struct {
-	Port int `toml:"port"` // Valid range: 1-65535
+	Port   int    `toml:"port"`   // Valid range: 1-65535
+	Domain string `toml:"domain"` // Bind domain (e.g. "example.com" or "0.0.0.0")
 }
 
 // TOMLDatabaseConfig represents database configuration
@@ -238,6 +239,36 @@ func SaveProxy(proxyHTTP string) error {
 	}
 
 	cfg.Proxy.HTTP = proxyHTTP
+
+	data, err := toml.Marshal(&cfg)
+	if err != nil {
+		return fmt.Errorf("marshal toml: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("write config.toml: %w", err)
+	}
+	return nil
+}
+
+// SaveServerDomain persists the domain binding setting to config.toml.
+func SaveServerDomain(domain string) error {
+	path, found := FindConfigFile()
+	if !found {
+		if domain == "" {
+			return nil
+		}
+		path = "config.toml"
+	}
+
+	var cfg TOMLConfig
+	if data, err := os.ReadFile(path); err == nil {
+		if err := toml.Unmarshal(data, &cfg); err != nil {
+			cfg = TOMLConfig{}
+		}
+	}
+
+	cfg.Server.Domain = domain
 
 	data, err := toml.Marshal(&cfg)
 	if err != nil {

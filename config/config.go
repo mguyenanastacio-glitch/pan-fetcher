@@ -48,7 +48,8 @@ type AuthConfig struct {
 
 // ServerConfig represents server configuration
 type ServerConfig struct {
-	Port int
+	Port   int
+	Domain string // Bind domain, e.g. "example.com" or "0.0.0.0"
 }
 
 // DatabaseConfig represents database configuration
@@ -81,6 +82,8 @@ type CLIParams struct {
 	RSSPath          string
 	Port             int
 	PortSet          bool
+	Domain           string
+	DomainSet        bool
 	ChunkDelay       int
 	ChunkDelaySet    bool
 	ChunkSize        int
@@ -150,6 +153,13 @@ func Resolve(cli CLIParams, toml *TOMLConfig, tomlPath string, legacy *LegacyCon
 		cfg.Server.Port = toml.Server.Port
 	} else {
 		cfg.Server.Port = 8115 // Default
+	}
+
+	// Domain priority: CLI domain > TOML domain > default "" (bind all)
+	if cli.DomainSet || cli.Domain != "" {
+		cfg.Server.Domain = cli.Domain
+	} else if toml != nil && toml.Server.Domain != "" {
+		cfg.Server.Domain = toml.Server.Domain
 	}
 
 	// Database priority: TOML database.path > existing db.sqlite > default "db.sqlite"

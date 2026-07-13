@@ -11,6 +11,8 @@ cookies_file = '.cookies'
 [server]
 # Web 管理面板端口，0 表示不启用
 port = 8115
+# 访问域名，用于外网访问 Web 面板
+# domain = 'pan.example.com'
 
 [database]
 # SQLite 数据库路径，留空使用默认 db.sqlite
@@ -18,7 +20,6 @@ path = ''
 
 [p115]
 # 离线任务参数
-disable_cache = false
 chunk_delay = 2
 chunk_size = 200
 cooldown_min_ms = 1000

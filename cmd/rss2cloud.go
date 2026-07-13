@@ -77,6 +77,7 @@ var (
 	}
 	// server subcommand
 	port        int
+	domain      string
 	webPassword string
 
 	serverCmd = &cobra.Command{
@@ -87,6 +88,7 @@ var (
 			server.SetPassword(webPassword)
 			server.LoadPersistedPassword()
 			srv := server.New(pAgent, cfg.Server.Port)
+			srv.SetDomain(cfg.Server.Domain)
 			srv.LoadProxyConfig()
 
 			// Initialize indexer manager from YAML definitions.
@@ -144,6 +146,7 @@ func init() {
 	rootCmd.AddCommand(magnetCmd)
 	// server subcommand
 	serverCmd.Flags().IntVarP(&port, "port", "p", 8115, "server port")
+	serverCmd.Flags().StringVar(&domain, "domain", "", "bind domain/IP (e.g. 'example.com' or '0.0.0.0', empty = bind all)")
 	serverCmd.Flags().StringVar(&webPassword, "web-password", "", "web login password (empty = no auth)")
 	rootCmd.AddCommand(serverCmd)
 }
@@ -172,6 +175,10 @@ func buildCLIParams(cmd *cobra.Command) config.CLIParams {
 	if cmd != nil && cmd.Flags().Changed("port") {
 		cliParams.Port = port
 		cliParams.PortSet = true
+	}
+	if cmd != nil && cmd.Flags().Changed("domain") {
+		cliParams.Domain = domain
+		cliParams.DomainSet = true
 	}
 	return cliParams
 }

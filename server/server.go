@@ -55,6 +55,7 @@ type Agent interface {
 type Server struct {
 	Agent     Agent
 	Port      int
+	Domain    string // Bind domain, e.g. "example.com" or "0.0.0.0"
 	ProxyHTTP string
 	fsCache   map[string]fsCacheEntry
 	fsCacheMu sync.Mutex
@@ -129,9 +130,11 @@ type dashboardData struct {
 	RssSubs       []rssSubRow
 	Settings      p115pkg.AppSettings
 	ProxyHTTP     string
+	Domain        string
 	ShowQR        bool
 	Cookies       string
 	SearchQuery   string
+	SearchKeyword string
 	SearchResults []indexer.SearchResult
 	SearchErrors  map[string]string
 	SearchCategory string
@@ -778,6 +781,8 @@ var translations = map[string]map[string]string{
 		"login_success_msg":       "登录成功",
 		"waiting":                 "等待中...",
 		"http_proxy_label":        "HTTP 代理",
+		"domain_label":            "访问域名",
+		"domain_hint":             "通过此域名访问 Web 面板",
 		"subs_interval_label":     "订阅间隔(分)",
 		"restart_service_btn":     "🔄 重启服务",
 		"confirm_btn":             "确定",
@@ -1029,6 +1034,8 @@ var translations = map[string]map[string]string{
 		"login_success_msg":       "Login successful",
 		"waiting":                 "Waiting...",
 		"http_proxy_label":        "HTTP Proxy",
+		"domain_label":            "Domain",
+		"domain_hint":             "Access web panel via this domain",
 		"subs_interval_label":     "Subscription Interval (min)",
 		"restart_service_btn":     "🔄 Restart Service",
 		"confirm_btn":             "OK",
@@ -1794,6 +1801,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <form action="/search" method="post" id="search-form">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <input name="q" id="search-q" placeholder="{{index .T "search_ph"}}" value="{{.SearchQuery}}" style="flex:3;min-width:160px;" autofocus>
+          <input name="keyword" id="search-keyword" placeholder="{{index .T "filter_placeholder"}}" value="{{.SearchKeyword}}" style="flex:1.5;min-width:100px;" oninput="filterResults()">
           <select name="category" style="flex:1;min-width:100px;">
             <option value="">{{index .T "all_categories"}}</option>
             <option value="anime"{{if eq .SearchCategory "anime"}} selected{{end}}>{{index .T "category_anime"}}</option>
@@ -1835,7 +1843,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
             <div style="flex:2;min-width:140px;"><label style="font-size:12px;">{{index .T "sub_name_label"}}</label><input name="name" placeholder="{{index .T "sub_name_placeholder"}}" value="{{.SearchQuery}}" style="font-size:13px;"></div>
             <div style="flex:3;min-width:200px;"><label style="font-size:12px;">{{index .T "rss_addr_label"}}</label><input name="url" placeholder="{{index .T "rss_addr_placeholder"}}" value="{{.RssURL}}" style="font-size:13px;"></div>
-            <div style="flex:1;min-width:80px;"><label style="font-size:12px;">{{index .T "filter_label"}}</label><input name="filter" placeholder="{{index .T "filter_placeholder"}}" style="font-size:13px;"></div>
+            <div style="flex:1;min-width:80px;"><label style="font-size:12px;">{{index .T "filter_label"}}</label><input name="filter" id="sub-filter" placeholder="{{index .T "filter_placeholder"}}" value="{{.SearchKeyword}}" style="font-size:13px;"></div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
             <div style="flex:1;min-width:140px;"><label style="font-size:12px;">{{index .T "dir_id_opt"}} <button type="button" onclick="browseDirsFor('sub-cid')" style="padding:2px 8px;font-size:11px;margin:0;background:var(--accent-2);">{{index .T "browse_btn"}}</button></label><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;"></div>
@@ -1848,8 +1856,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <!-- search results -->
       {{if .SearchResults}}
       <div style="margin-top:16px;">
-        <table class="tbl"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "indexer"}}</th><th></th></tr></thead><tbody>
-        {{range .SearchResults}}<tr>
+        <table class="tbl" id="search-results"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "indexer"}}</th><th></th></tr></thead><tbody>
+        {{range .SearchResults}}<tr data-title="{{.Title}}">
           <td>{{if .PageURL}}<a href="{{.PageURL}}" target="_blank">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
           <td class="muted">{{.SizeFmt}}</td><td>{{.Seeders}}</td><td class="muted">{{.IndexerName}}</td>
           <td>{{if .MagnetURL}}<button data-magnet="{{.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
@@ -1874,6 +1882,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         if(card)card.innerHTML=saved;
       }
       {{end}}
+      // Apply keyword filter on load (deferred for script load order)
+      setTimeout(function(){
+        if(document.getElementById('search-keyword')&&document.getElementById('search-keyword').value.trim()){
+          filterResults();
+        }
+      }, 0);
     })();
     </script>
     {{end}}
@@ -1900,7 +1914,26 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <script>
       function toggleSubForm(){
         var el=document.getElementById('sub-form');
-        el.style.display=el.style.display==='none'?'block':'none';
+        if(el.style.display==='none'){
+          el.style.display='block';
+          // Auto-fill keyword into filter field
+          var kw=document.getElementById('search-keyword');
+          var sf=document.getElementById('sub-filter');
+          if(kw&&sf&&kw.value.trim())sf.value=kw.value.trim();
+        }else{
+          el.style.display='none';
+        }
+      }
+      // Client-side keyword filter for search results
+      function filterResults(){
+        var kw=(document.getElementById('search-keyword')||{}).value||'';
+        var rows=document.querySelectorAll('#search-results tbody tr');
+        if(!rows.length)return;
+        kw=kw.toLowerCase();
+        rows.forEach(function(r){
+          var title=(r.getAttribute('data-title')||'').toLowerCase();
+          r.style.display=(!kw||title.indexOf(kw)>=0)?'':'none';
+        });
       }
       var pendingMagnet='';
       async function addTaskWithBrowse(magnet){
@@ -2250,6 +2283,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <label>{{index .T "http_proxy_label"}}</label>
             <input name="proxy_http" placeholder="http://127.0.0.1:7890" value="{{.ProxyHTTP}}">
           </div>
+          <div style="flex:1.5;min-width:160px;">
+            <label>{{index .T "domain_label"}}</label>
+            <input name="domain" placeholder="example.com" value="{{.Domain}}" title="{{index .T "domain_hint"}}">
+          </div>
           <div style="flex:0.8;min-width:100px;">
             <label>{{index .T "subs_interval_label"}}</label>
             <input name="subs_interval" type="number" placeholder="{{index .T "subs_interval_ph"}}" value="{{.Settings.SubsInterval}}" min="0" style="font-size:13px;">
@@ -2315,6 +2352,11 @@ func New(agent *p115pkg.Agent, port int) *Server {
 	return s
 }
 
+// SetDomain sets the domain to bind the server to.
+func (s *Server) SetDomain(domain string) {
+	s.Domain = domain
+}
+
 // SetIndexerManager sets the indexer manager on the server.
 func (s *Server) SetIndexerManager(m *indexer.Manager) {
 	s.IdxMgr = m
@@ -2336,7 +2378,9 @@ func (s *Server) saveProxyConfig() {
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
-	srv = &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: mux}
+
+	addr := fmt.Sprintf(":%d", s.Port)
+	srv = &http.Server{Addr: addr, Handler: mux}
 
 	// Load caches
 	globalDedup.Load()
@@ -2344,7 +2388,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start subscription auto-runner
 	go s.autoRunSubscriptions()
 
-	log.Printf("server started on port %d\n", s.Port)
+	log.Printf("server started on port %d (accessible via any domain/IP)\n", s.Port)
 	return srv.ListenAndServe()
 }
 
@@ -2925,6 +2969,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.ProxyHTTP = v
 			changes = append(changes, fmt.Sprintf("proxy=%s", v))
 		}
+		// Domain
+		if v := strings.TrimSpace(r.FormValue("domain")); v != s.Domain {
+			s.Domain = v
+			_ = config.SaveServerDomain(v)
+			changes = append(changes, fmt.Sprintf("domain=%s", v))
+		}
 		// Language
 		if v := strings.TrimSpace(r.FormValue("lang")); v != "" && v != ws.Lang {
 			ws.Lang = v
@@ -2987,6 +3037,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data := s.pageData(tr(lang, "settings_saved"), "")
 		data.Page = "settings"
 		data.ProxyHTTP = s.ProxyHTTP
+		data.Domain = s.Domain
 		if s.Agent != nil {
 			data.Settings = s.Agent.GetSettings()
 		}
@@ -3014,6 +3065,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", errMsg)
 	data.Page = "settings"
 	data.ProxyHTTP = s.ProxyHTTP
+	data.Domain = s.Domain
 	if s.Agent != nil {
 		data.Settings = s.Agent.GetSettings()
 	}
@@ -3427,6 +3479,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// Parse filters
 		category := strings.TrimSpace(r.FormValue("category"))
 		sortBy := strings.TrimSpace(r.FormValue("sort"))
+		keyword := strings.TrimSpace(r.FormValue("keyword"))
 		if sortBy == "" {
 			sortBy = "seeds"
 		}
@@ -3445,6 +3498,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		data.SearchResults = se.Results
 		data.SearchErrors = se.Errors
 		data.SearchQuery = q
+		data.SearchKeyword = keyword
 		data.SearchCategory = category
 		data.SearchSort = sortBy
 		data.SearchIndexers = indexers
