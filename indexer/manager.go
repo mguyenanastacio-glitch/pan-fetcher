@@ -324,3 +324,38 @@ func (m *Manager) TestAll() map[string]string {
 func (m *Manager) Login(id, username, password string) error {
 	return m.engine.Login(id, username, password)
 }
+
+// GetDefinitionYAML returns the raw YAML content of an indexer definition.
+func (m *Manager) GetDefinitionYAML(id string) (string, error) {
+	path := filepath.Join(m.defDir, id+".yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// UpdateDefinitionYAML overwrites an indexer's YAML file and reloads it.
+func (m *Manager) UpdateDefinitionYAML(id, yamlContent string) error {
+	path := filepath.Join(m.defDir, id+".yml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0644); err != nil {
+		return err
+	}
+	// Reload the definition
+	return m.engine.ReloadDefinition(id, path)
+}
+
+// DeleteDefinition removes an indexer's YAML file and unloads it.
+func (m *Manager) DeleteDefinition(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	path := filepath.Join(m.defDir, id+".yml")
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	delete(m.enabled, id)
+	delete(m.health, id)
+	m.engine.RemoveDefinition(id)
+	m.saveEnabled(m.defDir)
+	return nil
+}

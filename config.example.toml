@@ -1,0 +1,29 @@
+# pan-fetcher 配置示例
+# 复制为 config.toml 并填入你的信息
+
+rss = []
+
+[auth]
+# 115 cookies（二选一）
+cookies_file = '.cookies'
+# cookies = '你的115cookies'
+
+[server]
+# Web 管理面板端口，0 表示不启用
+port = 8115
+
+[database]
+# SQLite 数据库路径，留空使用默认 db.sqlite
+path = ''
+
+[p115]
+# 离线任务参数
+disable_cache = false
+chunk_delay = 2
+chunk_size = 200
+cooldown_min_ms = 1000
+cooldown_max_ms = 1100
+
+[proxy]
+# HTTP 代理地址，留空不使用
+# http = 'http://127.0.0.1:7890'

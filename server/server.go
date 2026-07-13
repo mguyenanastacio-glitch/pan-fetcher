@@ -21,20 +21,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/deadblue/elevengo"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/indexer"
 	p115pkg "github.com/mguyenanastacio-glitch/pan-fetcher/p115"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/rsssite"
+
+	"github.com/deadblue/elevengo"
 )
 
 type Agent interface {
-	AddMagnetTask([]string, string, string)
-	QuickGrabRSS(rssURL, cid, savepath, keyword, subKey string)
+	AddMagnetTask([]string, string, string) error
+	ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string)
 	OfflineClear(int) error
 	ListTasks() ([]p115pkg.TaskItem, error)
 	ListDir(string) ([]p115pkg.DirEntry, error)
 	GetEntry(string) (p115pkg.DirEntry, error)
+	Mkdir(parentID, name string) (p115pkg.DirEntry, error)
+	RenameEntry(entryID, newName string) error
+	DeleteEntry(entryID string) error
+	MoveEntry(targetDirID, entryID string) error
+	Copy(targetDirID, entryID string) error
 	UserGet(*elevengo.UserInfo) error
 	StoreClose() error
 	// Settings
@@ -53,6 +59,12 @@ type Server struct {
 	fsCache   map[string]fsCacheEntry
 	fsCacheMu sync.Mutex
 	IdxMgr    *indexer.Manager
+
+	// Lightweight caches for expensive per-request operations
+	connCheckLoggedIn bool
+	connCheckTime     time.Time
+	entryCache        map[string]p115pkg.DirEntry
+	entryCacheMu      sync.Mutex
 }
 
 type fsCacheEntry struct {
@@ -66,6 +78,20 @@ func (s *Server) SetAgent(a Agent) {
 		pa.Dedup = globalDedup
 	}
 	s.Agent = a
+}
+
+func (s *Server) invalidateFSCache(dirID string) {
+	s.fsCacheMu.Lock()
+	if dirID == "" {
+		s.fsCache = make(map[string]fsCacheEntry)
+	} else {
+		delete(s.fsCache, "fs:"+dirID)
+	}
+	s.fsCacheMu.Unlock()
+	// Also clear entry cache on modifications
+	s.entryCacheMu.Lock()
+	s.entryCache = make(map[string]p115pkg.DirEntry)
+	s.entryCacheMu.Unlock()
 }
 
 type OfflineTask struct {
@@ -131,19 +157,22 @@ var dedupCachePath = "dedup-cache.json"
 // ---------- dedup + torrent URL cache (unified) ----------
 
 // dedup-cache.json format:
-// { "_torrent_urls": {"https://...": "hash"}, "subKey1": ["hash1",...], ... }
+// { "_torrent_urls": {"https://...": "hash"}, "_hash_names": {"hash": "name"}, "subKey1": {"hash1":true,...}, ... }
 
 const torrentURLsKey = "_torrent_urls"
+const hashNamesKey = "_hash_names"
 
 type dedupCache struct {
 	mu          sync.Mutex
 	subs        map[string]map[string]bool // subKey -> infoHash -> true
 	torrentURLs map[string]string          // .torrent URL -> info hash
+	hashNames   map[string]string          // infoHash -> display name
 }
 
 var globalDedup = &dedupCache{
 	subs:        make(map[string]map[string]bool),
 	torrentURLs: make(map[string]string),
+	hashNames:   make(map[string]string),
 }
 
 func (d *dedupCache) Load() {
@@ -164,14 +193,29 @@ func (d *dedupCache) Load() {
 			for url, hash := range urls {
 				d.torrentURLs[url] = hash
 			}
-		} else {
-			var list []string
-			json.Unmarshal(v, &list)
-			set := make(map[string]bool, len(list))
-			for _, h := range list {
-				set[h] = true
+		} else if k == hashNamesKey {
+			var names map[string]string
+			json.Unmarshal(v, &names)
+			for hash, name := range names {
+				d.hashNames[hash] = name
 			}
-			d.subs[k] = set
+		} else {
+			// Support both legacy array format and new map format
+			var list []string
+			if err := json.Unmarshal(v, &list); err == nil {
+				set := make(map[string]bool, len(list))
+				for _, h := range list {
+					set[h] = true
+				}
+				d.subs[k] = set
+			} else {
+				var set map[string]bool
+				json.Unmarshal(v, &set)
+				if set == nil {
+					set = make(map[string]bool)
+				}
+				d.subs[k] = set
+			}
 		}
 	}
 }
@@ -203,6 +247,10 @@ func (d *dedupCache) Add(subKey, magnet string) {
 		d.subs[subKey] = make(map[string]bool)
 	}
 	d.subs[subKey][h] = true
+	// Store display name from magnet dn= parameter
+	if name := extractNameFromMagnet(magnet); name != "" {
+		d.hashNames[h] = name
+	}
 }
 
 // RemoveSub deletes all dedup entries for a given subKey.
@@ -261,24 +309,78 @@ func (d *dedupCache) SetTorrentHash(url, hash string) {
 	d.saveLocked()
 }
 
+func (d *dedupCache) SetHashName(hash, name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hashNames[hash] = name
+	d.saveLocked()
+}
+
+func (d *dedupCache) GetHashName(hash string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.hashNames[hash]
+}
+
 func (d *dedupCache) saveLocked() {
-	raw := make(map[string]interface{}, len(d.subs)+1)
-	if len(d.torrentURLs) > 0 {
-		urls := make(map[string]string, len(d.torrentURLs))
-		for url, hash := range d.torrentURLs {
-			urls[url] = hash
-		}
-		raw[torrentURLsKey] = urls
+	raw := make(map[string]interface{}, len(d.subs)+2)
+	urls := make(map[string]string, len(d.torrentURLs))
+	for url, hash := range d.torrentURLs {
+		urls[url] = hash
 	}
+	raw[torrentURLsKey] = urls
+	names := make(map[string]string, len(d.hashNames))
+	for hash, name := range d.hashNames {
+		names[hash] = name
+	}
+	raw[hashNamesKey] = names
 	for k, set := range d.subs {
+		if len(set) == 0 {
+			continue
+		}
 		list := make([]string, 0, len(set))
 		for h := range set {
 			list = append(list, h)
 		}
 		raw[k] = list
 	}
-	data, _ := json.Marshal(raw)
-	os.WriteFile(dedupCachePath, data, 0644)
+	data, err := json.Marshal(raw)
+	if err != nil {
+		log.Printf("[dedup] save marshal error: %v", err)
+		return
+	}
+	if err := os.WriteFile(dedupCachePath, data, 0644); err != nil {
+		log.Printf("[dedup] save write error: %v", err)
+	}
+}
+
+// ClearSub removes all dedup entries for a subKey and persists.
+func (d *dedupCache) ClearSub(subKey string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.subs, subKey)
+	d.saveLocked()
+	log.Printf("[dedup] cleared subKey=%q (%d remaining)", subKey, len(d.subs))
+}
+
+// RemoveHash removes a single hash from a subKey's dedup set.
+func (d *dedupCache) RemoveHash(subKey, hash string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	set := d.subs[subKey]
+	if set == nil {
+		return false
+	}
+	if _, ok := set[hash]; !ok {
+		return false
+	}
+	delete(set, hash)
+	if len(set) == 0 {
+		delete(d.subs, subKey)
+	}
+	d.saveLocked()
+	log.Printf("[dedup] removed hash=%s from subKey=%q", hash, subKey)
+	return true
 }
 
 func (d *dedupCache) AllTorrentURLs() [][2]string {
@@ -294,8 +396,16 @@ func (d *dedupCache) AllTorrentURLs() [][2]string {
 func (d *dedupCache) RemoveTorrentURL(url string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	hash := d.torrentURLs[url]
 	delete(d.torrentURLs, url)
+	// Also remove this hash from all subKey entries so re-download is allowed
+	if hash != "" {
+		for _, set := range d.subs {
+			delete(set, hash)
+		}
+	}
 	d.saveLocked()
+	log.Printf("[dedup] removed torrent URL mapping: %s (hash=%s)", url, hash)
 }
 
 // TorrentURLByHash returns the .torrent URL for a given info hash, or "".
@@ -337,13 +447,22 @@ func extractInfoHashFromMagnet(magnet string) string {
 	return ""
 }
 
+func extractNameFromMagnet(magnet string) string {
+	for _, part := range strings.Split(magnet, "&") {
+		if strings.HasPrefix(strings.ToLower(part), "dn=") {
+			name, _ := url.QueryUnescape(part[3:])
+			return name
+		}
+	}
+	return ""
+}
+
 type webSettings struct {
 	Lang          string `json:"lang"`
 	ChunkSize     int    `json:"chunk_size"`
 	ChunkDelay    int    `json:"chunk_delay"`
 	CooldownMin   int    `json:"cooldown_min"`
 	CooldownMax   int    `json:"cooldown_max"`
-	DisableCache  bool   `json:"disable_cache"`
 	WebPassword   string `json:"web_password"`
 	SubsInterval  int    `json:"subs_interval"`
 }
@@ -351,12 +470,15 @@ type webSettings struct {
 func (s *Server) loadWebSettings() webSettings {
 	data, err := os.ReadFile("web-settings.json")
 	if err != nil {
-		return webSettings{Lang: "zh"}
+		return webSettings{Lang: "zh", SubsInterval: 60}
 	}
 	var ws webSettings
 	json.Unmarshal(data, &ws)
 	if ws.Lang == "" {
 		ws.Lang = "zh"
+	}
+	if ws.SubsInterval <= 0 {
+		ws.SubsInterval = 60
 	}
 	return ws
 }
@@ -429,6 +551,26 @@ func SetPassword(pw string) {
 	webPassword = pw
 }
 
+// LoadPersistedPassword reads the password from web-settings.json if not already set via CLI.
+func LoadPersistedPassword() {
+	if webPassword != "" {
+		return // CLI flag takes precedence
+	}
+	data, err := os.ReadFile("web-settings.json")
+	if err != nil {
+		return
+	}
+	var ws struct {
+		WebPassword string `json:"web_password"`
+	}
+	if err := json.Unmarshal(data, &ws); err != nil {
+		return
+	}
+	if ws.WebPassword != "" {
+		webPassword = ws.WebPassword
+	}
+}
+
 func newSessionToken() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -468,8 +610,9 @@ var translations = map[string]map[string]string{
 	"zh": {
 		"title":           "pan-fetcher 管理页",
 		"logout":          "退出",
-		"home":            "🏠 首页",
-		"files":           "📂 文件浏览",
+		"about":           "关于",
+		"home":            "📥 离线下载",
+		"files":           "📂 文件管理",
 		"subs":            "📋 订阅管理",
 		"settings":        "⚙️ 设置",
 		"add_magnet":      "添加磁力任务",
@@ -500,7 +643,7 @@ var translations = map[string]map[string]string{
 		"clear_all_del":   "清理全部并删除文件",
 		"execute":         "执行",
 		"no_tasks":        "暂无离线任务",
-		"runtime_log":     "运行日志",
+		"runtime_log":     "📜 运行日志",
 		"expand":          "展开",
 		"collapse":        "收起",
 		"sys_settings":    "系统设置",
@@ -518,16 +661,24 @@ var translations = map[string]map[string]string{
 		"chunk_delay":     "分块延迟(秒)",
 		"cooldown_min":    "API最小间隔(ms)",
 		"cooldown_max":    "API最大间隔(ms)",
-		"disable_cache":   "禁用缓存",
 		"web_pw":          "Web 管理密码 (留空=无认证)",
 		"web_pw_ph":       "设置登录密码",
 		"save":            "保存",
 		"db_path":         "DB 路径",
-		"cloud_files":     "云文件浏览",
+		"cloud_files":     "云文件管理",
 		"root_dir":        "根目录",
 		"name":            "名称",
 		"size":            "大小",
 		"empty_dir":       "此目录为空",
+		"new_folder":      "新建文件夹",
+		"folder_name":     "文件夹名称",
+		"rename":          "重命名",
+		"copy":            "复制",
+		"new_name":        "新名称",
+		"move":            "移动到",
+		"target_dir_id":   "目标目录 ID",
+		"confirm_delete":  "确认删除",
+		"delete":          "删除",
 		"add_sub":         "添加订阅",
 		"sub_name_ph":     "剧集/电影名称",
 		"sub_anime":       "番剧",
@@ -588,16 +739,131 @@ var translations = map[string]map[string]string{
 		"dedup_title":     "缓存库",
 		"dedup_empty":     "暂无缓存记录。订阅自动执行后会自动记录已下载的种子。",
 		"dedup_clear_sub": "清空此项",
-		"torrent":         "🧲 缓存库",
-		"torrent_title":   "Torrent 缓存库",
-		"torrent_empty":   "暂无缓存记录。本地聚合 RSS 首次遇到新 .torrent 时会下载转换并缓存。",
-		"torrent_clear":   "清空缓存",
+		"clear":           "清空",
+		"cache":           "缓存",   
+		// --- 新增翻译键 ---
+		// 错误 / 状态消息
+		"err_not_logged_in":    "115 未登录，请先在设置中配置 Cookies",
+		"tasks_submitted_fmt":  "已提交 %d 个磁力任务",
+		"err_rss_empty":        "RSS 地址不能为空",
+		"quick_started_fmt":    "快速抓取已启动: %s",
+		"err_clear_type":       "清理类型必须是 1-6",
+		"clear_executed_fmt":   "已执行清理类型 %d",
+		"err_read_dir":         "读取目录失败: ",
+		"err_missing_sub_name": "缺少订阅名",
+		"err_cookies_empty":    "Cookies 不能为空",
+		"err_login_failed":     "登录失败: ",
+		"saving_failed":        "保存失败: ",
+		"login_success":        "登录成功",
+		"err_not_logged_in_subs": "115 未登录，无法运行订阅",
+		"subs_processing_fmt":    "已开始处理 %s",
+		// 模板 UI / JS
+		"confirm_restart":         "确定要重启服务吗？",
+		"restarting":              "服务正在重启，请稍候刷新页面…",
+		"restart_failed":          "重启失败: ",
+		"restart_req_failed":      "重启请求失败: ",
+		"cancel":                  "取消",
+		"failed":                  "失败",
+		"completed":               "已完成",
+		"downloading":             "下载中",
+		"all_tab":                 "全部",
+		"confirm_clear_cache_msg": "确定清空缓存记录？",
+		"load_failed":             "加载失败: ",
+		"username_label":          "用户名",
+		"password_label":          "密码",
+		"login_label":             "登录",
+		"credentials_required":    "请输入用户名和密码",
+		"error_label":             "错误",
+		"success_label":           "成功",
+		"login_success_msg":       "登录成功",
+		"waiting":                 "等待中...",
+		"http_proxy_label":        "HTTP 代理",
+		"subs_interval_label":     "订阅间隔(分)",
+		"restart_service_btn":     "🔄 重启服务",
+		"confirm_btn":             "确定",
+		"browse_btn":              "📁 浏览",
+		// RSS XML
+		"rss_feed_title": "pan-fetcher 聚合搜索",
+		"rss_feed_desc":  "聚合搜索: %s",
+		// JSON-only
+		"restarting_json":      "正在重启…",
+		"not_logged_in_json":   "115 未登录",
+		"save_failed_json":     "保存失败: ",
+		// 侧栏
+		"toggle_sidebar":       "折叠侧边栏",
+		"announcement":         "欢迎使用 pan-fetcher — 云文件管理与 RSS 订阅下载",
+		"about_title":          "关于 pan-fetcher",
+		"about_desc":           "pan-fetcher 是一款集成 115 网盘管理的 RSS 订阅下载工具，支持多索引器聚合搜索、离线任务管理、文件管理等功能。",
+		"about_version":        "版本",
+		"about_author":         "源自 zhifengle/rss2cloud，融合 Prowlarr 索引引擎",
+		// JSON-only
+		// 订阅 / 搜索 弹窗
+		"enabled":              "启用",
+		"disabled":             "禁用",
+		"confirm_delete_sub":   "删除？",
+		"no_subs_hint":         "暂无订阅，请在 资源搜索 页面搜索后点击 📌 订阅此搜索 添加。",
+		"edit_sub":             "编辑订阅",
+		"subdir_label":         "子目录",
+		"filter_label":         "过滤",
+		"save_btn":             "保存",
+		"copy_link_title":      "复制链接",
+		// 搜索分类 / 排序
+		"all_categories":       "全部分类",
+		"category_anime":       "动漫",
+		"category_tv":          "剧集",
+		"category_movie":       "电影",
+		"category_music":       "音乐",
+		"category_other":       "其他",
+		"sort_seeds":           "按做种数",
+		"sort_size":            "按大小",
+		"sort_date":            "按时间",
+		"search_sites":         "搜索站点:",
+		"subscribe_search":     "📌 订阅此搜索",
+		"add_rss_sub_title":    "📌 添加 RSS 订阅",
+		"sub_name_label":       "名称",
+		"sub_name_placeholder": "订阅名称",
+		"rss_addr_label":       "RSS 地址",
+		"rss_addr_placeholder": "RSS 地址",
+		"filter_placeholder":   "关键词",
+		"dir_id_opt":           "115 目录 ID (可选)",
+		"subdir_opt":           "子目录 (可选)",
+		"add_sub_btn":          "添加订阅",
+		"saved_searches_title": "📌 已保存的搜索",
+		"search_btn_sm":        "搜索",
+		"delete_btn":           "删除",
+		// 目录选择弹窗
+		"parent_dir_label":     "📁 .. (上级)",
+		"no_subfolders":        "此目录下没有子文件夹",
+		"select_dir_title":     "选择 115 目录 (当前: %s)",
+		"select_current_dir":   "选择当前目录",
+		"select_add":           "选此目录添加",
+		"select_dir_add":       "选择目标目录 (当前: %s)",
+		"task_added":           "已添加离线任务",
+		"add_failed":           "添加任务失败",
+		"close_btn":            "关闭",
+		// 缓存库列表
+		"sub_name_header":      "订阅名称",
+		"cache_count_header":   "缓存数",
+		"loading":              "加载中…",
+		"no_url_short":         "(无)",
+		"confirm_delete_url_map": "删除此 URL 映射？",
+		"no_records":           "(暂无记录)",
+		// 设置 & 其他
+		"lang_zh_option":       "中文",
+		"subs_interval_ph":     "默认60分钟，0=不自动",
+		"enter_search_kw":      "请输入搜索关键词",
+		"indexer_not_initialized": "索引器未初始化",
+		"please_fill_rss":      "请填写 RSS 地址",
+		"err_id_username_password": "需要 id, username, password",
+		"wrong_password_html":  "密码错误",
+		"login_page_title":     "pan-fetcher 登录",
 	},
 	"en": {
 		"title":           "pan-fetcher Dashboard",
 		"logout":          "Logout",
-		"home":            "🏠 Home",
-		"files":           "📂 Files",
+		"about":           "About",
+		"home":            "📥 Offline",
+		"files":           "📂 File Manager",
 		"subs":            "📋 Subs",
 		"settings":        "⚙️ Settings",
 		"add_magnet":      "Add Magnet Task",
@@ -628,7 +894,7 @@ var translations = map[string]map[string]string{
 		"clear_all_del":   "Clear All & Delete",
 		"execute":         "Execute",
 		"no_tasks":        "No offline tasks",
-		"runtime_log":     "Runtime Log",
+		"runtime_log":     "📜 Runtime Log",
 		"expand":          "Expand",
 		"collapse":        "Collapse",
 		"sys_settings":    "System Settings",
@@ -646,16 +912,24 @@ var translations = map[string]map[string]string{
 		"chunk_delay":     "Chunk Delay (s)",
 		"cooldown_min":    "API Min Interval (ms)",
 		"cooldown_max":    "API Max Interval (ms)",
-		"disable_cache":   "Disable Cache",
 		"web_pw":          "Web Password (empty=no auth)",
 		"web_pw_ph":       "Set login password",
 		"save":            "Save",
 		"db_path":         "DB Path",
-		"cloud_files":     "Cloud Files",
+		"cloud_files":     "Cloud File Manager",
 		"root_dir":        "Root",
 		"name":            "Name",
 		"size":            "Size",
 		"empty_dir":       "This directory is empty",
+		"new_folder":      "New Folder",
+		"folder_name":     "Folder Name",
+		"rename":          "Rename",
+		"copy":            "Copy",
+		"new_name":        "New Name",
+		"move":            "Move To",
+		"target_dir_id":   "Target Dir ID",
+		"confirm_delete":  "Confirm delete",
+		"delete":          "Delete",
 		"add_sub":         "Add Subscription",
 		"sub_name_ph":     "Show/Movie Name",
 		"sub_anime":       "Anime",
@@ -716,10 +990,124 @@ var translations = map[string]map[string]string{
 		"dedup_title":     "Cache Library",
 		"dedup_empty":     "No cache records yet. They are created automatically when subscriptions run.",
 		"dedup_clear_sub": "Clear",
-		"torrent":         "🧲 Cache",
-		"torrent_title":   "Torrent Cache Library",
-		"torrent_empty":   "No cache entries yet. Created when the local aggregated RSS first encounters a new .torrent URL.",
-		"torrent_clear":   "Clear Cache",
+		"clear":           "Clear",
+		"cache":           "Cache",
+		// --- New translation keys ---
+		// Error / status messages
+		"err_not_logged_in":    "Not logged in. Please configure Cookies in Settings first.",
+		"tasks_submitted_fmt":  "Submitted %d magnet tasks",
+		"err_rss_empty":        "RSS URL cannot be empty",
+		"quick_started_fmt":    "Quick grab started: %s",
+		"err_clear_type":       "Clear type must be 1-6",
+		"clear_executed_fmt":   "Executed clear type %d",
+		"err_read_dir":         "Failed to read directory: ",
+		"err_missing_sub_name": "Missing subscription name",
+		"err_cookies_empty":    "Cookies cannot be empty",
+		"err_login_failed":     "Login failed: ",
+		"saving_failed":        "Save failed: ",
+		"login_success":        "Login successful",
+		"err_not_logged_in_subs": "Not logged in, cannot run subscriptions",
+		"subs_processing_fmt":    "Started processing %s",
+		// Template UI / JS
+		"confirm_restart":         "Are you sure you want to restart the service?",
+		"restarting":              "Service is restarting, please wait and refresh the page…",
+		"restart_failed":          "Restart failed: ",
+		"restart_req_failed":      "Restart request failed: ",
+		"cancel":                  "Cancel",
+		"failed":                  "Failed",
+		"completed":               "Completed",
+		"downloading":             "Downloading",
+		"all_tab":                 "All",
+		"confirm_clear_cache_msg": "Are you sure you want to clear the cache?",
+		"load_failed":             "Load failed: ",
+		"username_label":          "Username",
+		"password_label":          "Password",
+		"login_label":             "Login",
+		"credentials_required":    "Please enter username and password",
+		"error_label":             "Error",
+		"success_label":           "Success",
+		"login_success_msg":       "Login successful",
+		"waiting":                 "Waiting...",
+		"http_proxy_label":        "HTTP Proxy",
+		"subs_interval_label":     "Subscription Interval (min)",
+		"restart_service_btn":     "🔄 Restart Service",
+		"confirm_btn":             "OK",
+		"browse_btn":              "📁 Browse",
+		// RSS XML
+		"rss_feed_title": "pan-fetcher Aggregated Search",
+		"rss_feed_desc":  "Aggregated Search: %s",
+		// JSON-only
+		"restarting_json":      "Restarting…",
+		"not_logged_in_json":   "Not logged in",
+		"save_failed_json":     "Save failed: ",
+		// Sidebar
+		"toggle_sidebar":       "Toggle Sidebar",
+		"announcement":         "Welcome to pan-fetcher — cloud file manager & RSS downloader",
+		"about_title":          "About pan-fetcher",
+		"about_desc":           "pan-fetcher is an RSS subscription download tool with integrated 115 cloud management, featuring multi-indexer aggregated search, offline task management, and file management.",
+		"about_version":        "Version",
+		"about_author":         "Based on zhifengle/rss2cloud, powered by Prowlarr indexer engine",
+		// JSON-only
+		// Subscriptions / Search modals
+		"enabled":              "Enabled",
+		"disabled":             "Disabled",
+		"confirm_delete_sub":   "Delete?",
+		"no_subs_hint":         "No subscriptions yet. Go to Search page, find resources, and click 📌 Subscribe to add.",
+		"edit_sub":             "Edit Subscription",
+		"subdir_label":         "Subdirectory",
+		"filter_label":         "Filter",
+		"save_btn":             "Save",
+		"copy_link_title":      "Copy Link",
+		// Search categories / sort
+		"all_categories":       "All Categories",
+		"category_anime":       "Anime",
+		"category_tv":          "TV Series",
+		"category_movie":       "Movies",
+		"category_music":       "Music",
+		"category_other":       "Other",
+		"sort_seeds":           "By Seeders",
+		"sort_size":            "By Size",
+		"sort_date":            "By Date",
+		"search_sites":         "Search sites:",
+		"subscribe_search":     "📌 Subscribe This Search",
+		"add_rss_sub_title":    "📌 Add RSS Subscription",
+		"sub_name_label":       "Name",
+		"sub_name_placeholder": "Subscription Name",
+		"rss_addr_label":       "RSS URL",
+		"rss_addr_placeholder": "RSS URL",
+		"filter_placeholder":   "Keywords",
+		"dir_id_opt":           "115 Directory ID (optional)",
+		"subdir_opt":           "Subdirectory (optional)",
+		"add_sub_btn":          "Add Subscription",
+		"saved_searches_title": "📌 Saved Searches",
+		"search_btn_sm":        "Search",
+		"delete_btn":           "Delete",
+		// Directory picker modal
+		"parent_dir_label":     "📁 .. (Parent)",
+		"no_subfolders":        "No subfolders in this directory",
+		"select_dir_title":     "Select 115 Directory (current: %s)",
+		"select_current_dir":   "Select Current Folder",
+		"select_add":           "Add Here",
+		"select_dir_add":       "Select Target Directory (current: %s)",
+		"task_added":           "Task added",
+		"add_failed":           "Failed to add task",
+		"close_btn":            "Close",
+		// Cache library
+		"sub_name_header":      "Subscription Name",
+		"cache_count_header":   "Cache Count",
+		"loading":              "Loading…",
+		"no_url_short":         "(none)",
+		"confirm_delete_url_map": "Delete this URL mapping?",
+		"no_records":           "(No records)",
+		// Settings & misc
+		"lang_zh_option":       "中文",
+		"subs_interval_ph":     "Default 60min, 0=Disabled",
+		"enter_search_kw":      "Please enter a search keyword",
+		"indexer_not_initialized": "Indexer not initialized",
+		"please_fill_rss":      "Please fill in RSS URL",
+		"err_id_username_password": "id, username, password required",
+		"wrong_password_html":  "Wrong password",
+		"login_page_title":     "pan-fetcher Login",
 	},
 }
 
@@ -742,6 +1130,10 @@ func langMap(lang string) map[string]string {
 		return m
 	}
 	return translations["zh"]
+}
+
+func trf(lang, key string, args ...interface{}) string {
+	return fmt.Sprintf(tr(lang, key), args...)
 }
 
 // ---------- template ----------
@@ -807,9 +1199,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .sidebar-search { padding: 8px 12px; }
     .sidebar-search input {
       width: 100%; padding: 7px 10px; font-size: 12px; border-radius: 10px;
-      border: 1px solid var(--line); background: var(--bg); cursor: pointer;
+      border: 1px solid var(--line); background: var(--bg); cursor: pointer; caret-color: transparent;
     }
-    .sidebar-search input:focus { outline: none; border-color: var(--accent); background: #fff; }
+    .sidebar-search input:focus { outline: none; border-color: var(--accent); background: #fff; caret-color: auto; }
     .sidebar-nav { flex: 1; overflow-y: auto; padding: 4px 0; }
     .sidebar-nav a {
       display: flex; align-items: center; gap: 8px; padding: 10px 16px;
@@ -832,12 +1224,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       border-radius: 16px;
       padding: 16px;
       box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+      min-width: 0;
+      overflow-x: auto;
     }
     .card h2 { margin: 0 0 8px; font-size: 17px; }
     .meta { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
     label { display: block; margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
     input, textarea, select {
       width: 100%;
+      max-width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 8px 10px;
@@ -912,7 +1307,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .crumb-sep { color: var(--muted); margin: 0 4px; }
     .fs-tbl td.muted { color: var(--muted); font-size: 12px; }
     .fs-tbl td.mono { font-family: monospace; font-size: 11px; }
-    .topbar { margin-bottom: 18px; }
+    .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .topbar-msg { flex: 1; font-size: 13px; color: var(--muted); padding: 6px 12px; background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .topbar-msg.ok { color: var(--accent-2); border-color: #bae6fd; background: #f0f9ff; }
+    .topbar-msg.err { color: var(--danger); border-color: #fecaca; background: #fef2f2; }
     .sidebar-toggle-btn {
       background: none; border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px;
       cursor: pointer; font-size: 16px; color: var(--muted); margin: 0;
@@ -933,6 +1331,36 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .smodal-card h2 { margin-top: 0; }
   </style>
   <script>
+    var modalCb=null;
+    function showModal(title,body,buttons){
+      document.getElementById('g-modal-title').textContent=title;
+      document.getElementById('g-modal-body').innerHTML=body;
+      var btns=document.getElementById('g-modal-btns');
+      btns.innerHTML='';
+      (buttons||[{text:'{{index .T "confirm_btn"}}',cls:'',cb:function(){closeModal()}}]).forEach(function(b){
+        var btn=document.createElement('button');
+        btn.textContent=b.text;btn.style.margin='0';btn.style.padding='6px 16px';
+        if(b.cls)btn.style.background=b.cls;
+        if(b.id)btn.id=b.id;
+        btn.onclick=function(){if(b.cb)b.cb();};
+        btns.appendChild(btn);
+      });
+      document.getElementById('g-modal').style.display='flex';
+    }
+    function closeModal(){document.getElementById('g-modal').style.display='none';modalCb=null;}
+    function alertModal(msg){showModal('',msg,[{text:'OK',cls:'var(--accent)',cb:function(){closeModal()}}]);}
+    async function confirmAsync(msg){return new Promise(function(resolve){showModal('',msg,[{text:'Cancel',cls:'var(--danger)',cb:function(){closeModal();resolve(false);}},{text:'OK',cls:'var(--accent)',cb:function(){closeModal();resolve(true);}}]);});}
+    async function promptModal(title,label,defaultValue){return new Promise(function(resolve){var dv=(defaultValue||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');var body='<div style="margin-bottom:6px;font-size:13px;color:var(--muted);">'+label+'</div><input id="g-modal-input" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:14px;box-sizing:border-box;" value="'+dv+'" onkeydown="if(event.key===&quot;Enter&quot;)document.getElementById(&quot;g-modal-btn-ok&quot;).click()" autofocus>';showModal(title,body,[{text:'Cancel',cls:'var(--danger)',cb:function(){closeModal();resolve(null);}},{text:'OK',cls:'var(--accent)',id:'g-modal-btn-ok',cb:function(){var v=document.getElementById('g-modal-input').value.trim();closeModal();resolve(v);}}]);});}
+    function openSearchModal(){
+      var m=document.getElementById('search-modal');
+      if(m)m.classList.add('active');
+      var q=document.getElementById('search-q');
+      if(q)q.focus();
+    }
+    function closeSearchModal(){
+      var m=document.getElementById('search-modal');
+      if(m)m.classList.remove('active');
+    }
     function toggleSidebar(){
       var sb=document.getElementById('sidebar');
       var mn=document.getElementById('main');
@@ -940,48 +1368,65 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       if(mn){mn.classList.toggle('expanded');}
     }
     async function restartServer(){
-      if(!confirm('确定要重启服务吗？'))return;
+      if(!(await confirmAsync('{{index .T "confirm_restart"}}')))return;
       try{
         var r=await fetch('/settings/restart',{method:'POST'});
         var j=await r.json();
-        if(j.ok){alert('服务正在重启，请稍候刷新页面…');}
-        else{alert('重启失败: '+j.msg);}
-      }catch(e){alert('重启请求失败: '+e.message);}
+        if(j.ok){alertModal('{{index .T "restarting"}}');}
+        else{alertModal('{{index .T "restart_failed"}}'+j.msg);}
+      }catch(e){alertModal('{{index .T "restart_req_failed"}}'+e.message);}
+    }
+    function switchLang(lang){
+      fetch('/api/lang',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'lang='+lang}).then(function(){location.reload();});
     }
   </script>
 </head>
 <body>
+  <!-- global modal (must be outside all page blocks) -->
+  <div id="g-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999;align-items:center;justify-content:center;" onclick="if(event.target===this)closeModal()">
+    <div style="background:#fff;border-radius:12px;padding:20px;min-width:300px;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.15);" onclick="event.stopPropagation()">
+      <div id="g-modal-title" style="font-weight:600;margin-bottom:12px;"></div>
+      <div id="g-modal-body"></div>
+      <div id="g-modal-btns" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;"></div>
+    </div>
+  </div>
   <!-- left sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-logo">pan-fetcher</div>
+  <div class="sidebar collapsed" id="sidebar">
+    <div class="sidebar-logo" style="display:flex;align-items:center;justify-content:space-between;">
+      <span>pan-fetcher</span>
+      <select onchange="switchLang(this.value)" style="width:auto;font-size:11px;padding:2px 4px;margin:0;border:1px solid var(--line);border-radius:4px;background:var(--bg);">
+        <option value="zh"{{if eq .Lang "zh"}} selected{{end}}>CN</option>
+        <option value="en"{{if eq .Lang "en"}} selected{{end}}>EN</option>
+      </select>
+    </div>
     <div class="sidebar-search">
-      <input type="text" id="quick-search-input" placeholder="🔍 搜索…" value="{{.SearchQuery}}" readonly onclick="openSearchModal()" autocomplete="off">
+      <input type="text" id="quick-search-input" placeholder="{{index .T "search"}}" value="{{.SearchQuery}}" onfocus="location.href='/search';this.blur()" autocomplete="off">
     </div>
     <div class="sidebar-nav">
       <a href="/"{{if or (eq .Page "home") (eq .Page "")}} class="active"{{end}}>{{index .T "home"}}</a>
       <a href="/indexers"{{if eq .Page "indexers"}} class="active"{{end}}>{{index .T "indexers"}}</a>
       <a href="/fs"{{if eq .Page "fs"}} class="active"{{end}}>{{index .T "files"}}</a>
       <a href="/subs"{{if eq .Page "subs"}} class="active"{{end}}>{{index .T "subs"}}</a>
-      <a href="/dedup"{{if eq .Page "dedup"}} class="active"{{end}}>{{index .T "dedup"}}</a>
-      <a href="/tasks"{{if eq .Page "tasks"}} class="active"{{end}}>📥 离线任务</a>
-      <a href="/log"{{if eq .Page "log"}} class="active"{{end}}>📜 运行日志</a>
+      <a href="/log"{{if eq .Page "log"}} class="active"{{end}}>{{index .T "runtime_log"}}</a>
       <a href="/settings"{{if eq .Page "settings"}} class="active"{{end}}>{{index .T "settings"}}</a>
     </div>
     <div class="sidebar-footer">
       <a href="/logout" class="logout-text">{{index .T "logout"}}</a>
+      <a href="/about" class="logout-text">{{index .T "about"}}</a>
     </div>
   </div>
 
   <!-- main content -->
-  <div class="main" id="main">
+  <div class="main expanded" id="main">
     <div class="topbar">
-      <button class="sidebar-toggle-btn" onclick="toggleSidebar()" title="折叠侧边栏">☰</button>
+      <button class="sidebar-toggle-btn" onclick="toggleSidebar()" title="{{index .T "toggle_sidebar"}}">☰</button>
+      {{if .Error}}<div class="topbar-msg err">{{.Error}}</div>
+      {{else if .Message}}<div class="topbar-msg ok">{{.Message}}</div>
+      {{else}}<div class="topbar-msg">{{index .T "announcement"}}</div>
+      {{end}}
     </div>
 
-    {{if .Message}}<div class="status ok">{{.Message}}</div>{{end}}
-    {{if .Error}}<div class="status err">{{.Error}}</div>{{end}}
-
-    {{if or (eq .Page "home") (eq .Page "")}}
+    {{if or (eq .Page "home") (eq .Page "") (eq .Page "tasks")}}
     <div class="grid">
       <div class="card">
         <h2>{{index .T "add_magnet"}}</h2>
@@ -991,30 +1436,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <label for="cid">{{index .T "cid"}}</label>
           <div style="display:flex;gap:4px;">
             <input id="cid" name="cid" placeholder="{{index .T "cid_ph"}}" style="flex:1;">
-            <button type="button" onclick="browseDirsFor('cid')" style="margin:0;padding:4px 8px;font-size:12px;background:var(--accent-2);white-space:nowrap;">📁 浏览</button>
+            <button type="button" onclick="browseDirsFor('cid')" style="margin:0;padding:4px 8px;font-size:12px;background:var(--accent-2);white-space:nowrap;">{{index .T "browse_btn"}}</button>
           </div>
           <label for="savepath">{{index .T "savepath"}}</label>
           <input id="savepath" name="savepath" placeholder="{{index .T "savepath_ph"}}">
           <button type="submit">{{index .T "submit_task"}}</button>
         </form>
         <div class="hint">{{index .T "json_api"}} <code>POST /add</code></div>
-      </div>
-
-      <div class="card">
-        <h2>{{index .T "quick_grab"}}</h2>
-        <form action="/rss/quick" method="post">
-          <label for="rss-url">{{index .T "rss_url"}}</label>
-          <input id="rss-url" name="rss_url" placeholder="{{index .T "rss_url_ph"}}" required>
-          <label for="quick-keyword">{{index .T "keyword_opt"}}</label>
-          <input id="quick-keyword" name="keyword" placeholder="{{index .T "keyword_ph"}}">
-          <label for="quick-cid">{{index .T "target_cid"}}</label>
-          <div style="display:flex;gap:4px;">
-            <input id="quick-cid" name="cid" placeholder="{{index .T "target_cid_ph"}}" required style="flex:1;">
-            <button type="button" onclick="browseDirsFor('quick-cid')" style="margin:0;padding:4px 8px;font-size:12px;background:var(--accent-2);white-space:nowrap;">📁 浏览</button>
-          </div>
-          <button type="submit">{{index .T "grab_btn"}}</button>
-        </form>
-        <div class="hint">{{index .T "grab_hint"}}</div>
       </div>
     </div>
     {{end}}
@@ -1026,16 +1454,25 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <div class="breadcrumb">
         {{range .FSCrumbs}}<a class="crumb" href="/fs?dir={{.ID}}">{{if eq .ID "0"}}{{index $.T "root_dir"}}{{else}}{{.Name}}{{end}}</a><span class="crumb-sep">/</span>{{end}}
       </div>
+      <div style="margin-bottom:10px;">
+        <button onclick="fsNewFolder('{{.FSCurrentID}}')" style="padding:4px 12px;font-size:12px;">📁 {{index .T "new_folder"}}</button>
+      </div>
       {{if .FSEntries}}
       <table class="tbl fs-tbl">
-        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>ID</th></tr></thead>
+        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>ID</th><th></th></tr></thead>
         <tbody>
-        {{if ne .FSCurrentID "0"}}<tr><td>⬆</td><td><a href="/fs?dir={{.FSParentID}}">..</a></td><td></td><td></td></tr>{{end}}
+        {{if ne .FSCurrentID "0"}}<tr><td>⬆</td><td><a href="/fs?dir={{.FSParentID}}">..</a></td><td></td><td></td><td></td></tr>{{end}}
         {{range .FSEntries}}<tr>
           <td>{{.Icon}}</td>
           <td>{{if .IsDir}}<a href="/fs?dir={{.ID}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</td>
           <td class="muted">{{.Size}}</td>
           <td class="muted mono">{{.ID}}</td>
+          <td style="white-space:nowrap;">
+            <button onclick="fsRename('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;" title="{{index $.T "rename"}}">✎</button>
+            <button onclick="fsMove('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;" title="{{index $.T "move"}}">↗</button>
+            <button onclick="fsCopy('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;" title="{{index $.T "copy"}}">📋</button>
+            <button onclick="fsDelete('{{.ID}}','{{.Name}}')" style="background:var(--danger);padding:2px 6px;font-size:11px;margin:0;" title="{{index $.T "delete"}}">✕</button>
+          </td>
         </tr>{{end}}
         </tbody>
       </table>
@@ -1049,71 +1486,164 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "subs"}}
     <div class="card panel">
       <h2>{{index .T "subs_mgmt"}} ({{len .RssSubs}})
-        <span style="font-weight:400;font-size:12px;color:var(--muted);margin-left:8px;">通过资源搜索页 📌 订阅此搜索 添加</span>
+        <span style="font-weight:400;font-size:12px;color:var(--muted);margin-left:8px;">{{index .T "no_subs_hint"}}</span>
       </h2>
       {{if .RssSubs}}
       <table class="tbl">
-        <thead><tr><th>{{index .T "name"}}</th><th>RSS</th><th>CID</th><th>过滤</th><th>{{index .T "sub_status"}}</th><th></th></tr></thead>
+        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_status"}}</th><th>{{index .T "cache"}}</th><th></th></tr></thead>
         <tbody>
         {{range .RssSubs}}<tr>
-          <td><strong>{{.Name}}</strong><br><small class="muted">{{.Site}}</small></td>
-          <td class="muted" style="font-size:11px;max-width:180px;"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{.URL}}">{{.URL}}</div></td>
-          <td class="muted mono">{{.Cid}}</td>
-          <td class="muted">{{.Filter}}</td>
+          <td>
+            <strong>{{.Name}}</strong><br><small class="muted">{{.Site}}</small>
+          </td>
           <td>
             <form action="/subs" method="post" style="display:inline;">
               <input type="hidden" name="action" value="toggle">
               <input type="hidden" name="site" value="{{.Site}}">
               <input type="hidden" name="name" value="{{.Name}}">
-              <button type="submit" style="padding:2px 8px;font-size:11px;margin:0;{{if .Enabled}}background:var(--accent-2);{{else}}background:var(--danger);{{end}}">{{if .Enabled}}启用{{else}}禁用{{end}}</button>
+              <button type="submit" style="padding:2px 8px;font-size:11px;margin:0;{{if .Enabled}}background:var(--accent-2);{{else}}background:var(--danger);{{end}}">{{if .Enabled}}{{index $.T "enabled"}}{{else}}{{index $.T "disabled"}}{{end}}</button>
             </form>
           </td>
-          <td style="white-space:nowrap;">
-            <form action="/subs/run" method="post" style="display:inline;">
-              <input type="hidden" name="rss_url" value="{{.URL}}">
-              <input type="hidden" name="cid" value="{{.Cid}}">
-              <input type="hidden" name="savepath" value="{{.SavePath}}">
-              <input type="hidden" name="filter" value="{{.Filter}}">
-              <button type="submit" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="立即执行">▶</button>
+          <td>
+            {{if gt .CacheCount 0}}<span style="cursor:pointer;user-select:none;font-size:12px;" onclick="toggleSubCache('{{.Name}}',this)">▶ </span>{{end}}
+            <span style="font-size:12px;color:var(--muted);">{{.CacheCount}} {{index $.T "items"}}</span>
+            {{if gt .CacheCount 0}}
+            <form action="/dedup/clear" method="post" style="display:inline;">
+              <input type="hidden" name="sub" value="{{.Name}}">
+              <button type="submit" style="padding:1px 6px;font-size:10px;margin:0;background:var(--danger);" onclick="submitConfirm(this.form,'{{index $.T "confirm_clear_cache_msg"}}')">{{index $.T "clear"}}</button>
             </form>
-            <button onclick="editSub('{{.Site}}','{{.Name}}','{{.Cid}}','{{.SavePath}}','{{.Filter}}')" style="padding:2px 6px;font-size:11px;margin:0;">✎</button>
+            {{end}}
+          </td>
+          <td style="white-space:nowrap;">
+            <button onclick="runSub(this,'{{.URL}}','{{.Cid}}','{{.SavePath}}','{{.Filter}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="立即执行">▶</button>
+            <button onclick="editSubInline(this)" style="padding:2px 6px;font-size:11px;margin:0;">✎</button>
             <form action="/subs" method="post" style="display:inline;">
               <input type="hidden" name="action" value="delete">
               <input type="hidden" name="site" value="{{.Site}}">
               <input type="hidden" name="name" value="{{.Name}}">
-              <button type="submit" style="background:var(--danger);padding:2px 8px;font-size:11px;margin:0;" onclick="return confirm('删除？')">✕</button>
+              <button type="submit" style="background:var(--danger);padding:2px 8px;font-size:11px;margin:0;" onclick="submitConfirm(this.form,'{{index $.T "confirm_delete_sub"}}')">✕</button>
             </form>
           </td>
-        </tr>{{end}}
+        </tr>
+        <tr class="edit-row" style="display:none;">
+          <td colspan="4" style="padding:0;">
+            <div style="padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;margin:8px 0;">
+              <h3 style="margin:0 0 10px;">{{index $.T "edit_sub"}}</h3>
+              <form action="/subs" method="post">
+                <input type="hidden" name="action" value="edit">
+                <input type="hidden" name="site" value="{{.Site}}">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                  <div><label>CID</label><input name="cid" value="{{.Cid}}" style="font-size:13px;width:120px;"></div>
+                  <div><label>{{index $.T "subdir_label"}}</label><input name="savepath" value="{{.SavePath}}" style="font-size:13px;width:100px;"></div>
+                  <div><label>{{index $.T "filter_label"}}</label><input name="filter" value="{{.Filter}}" style="font-size:13px;width:100px;"></div>
+                  <button type="submit" style="margin-top:0;">{{index $.T "save"}}</button>
+                  <button type="button" onclick="closeAllEditRows()" style="margin-top:0;background:var(--danger);">{{index $.T "cancel"}}</button>
+                </div>
+              </form>
+            </div>
+          </td>
+        </tr>
+        <tr id="cache-{{.Name}}" style="display:none;"><td colspan="4" style="padding:0;">
+          <div style="padding:4px 8px;background:#f8fafc;max-height:300px;overflow-y:auto;" id="cache-list-{{.Name}}">{{index $.T "loading"}}</div>
+        </td></tr>
+        {{end}}
         </tbody>
       </table>
       {{else}}
-      <div class="hint">暂无订阅，请在 <a href="/search">资源搜索</a> 页面搜索后点击 📌 订阅此搜索 添加。</div>
+      <div class="hint">{{index .T "no_subs_hint"}}</div>
       {{end}}
-      <!-- edit modal -->
-      <div id="edit-sub-modal" style="display:none;margin-top:12px;padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;">
-        <h3 style="margin:0 0 10px;">编辑订阅</h3>
-        <form action="/subs" method="post">
-          <input type="hidden" name="action" value="edit">
-          <input type="hidden" name="site" id="edit-site">
-          <input type="hidden" name="name" id="edit-name">
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-            <div><label>CID</label><input name="cid" id="edit-cid" style="font-size:13px;width:120px;"></div>
-            <div><label>子目录</label><input name="savepath" id="edit-savepath" style="font-size:13px;width:100px;"></div>
-            <div><label>过滤</label><input name="filter" id="edit-filter" style="font-size:13px;width:100px;"></div>
-            <button type="submit" style="margin-top:0;">保存</button>
-            <button type="button" onclick="document.getElementById('edit-sub-modal').style.display='none'" style="margin-top:0;background:var(--danger);">取消</button>
-          </div>
-        </form>
-      </div>
       <script>
-        function editSub(site,name,cid,sp,f){
-          document.getElementById('edit-sub-modal').style.display='block';
-          document.getElementById('edit-site').value=site;
-          document.getElementById('edit-name').value=name;
-          document.getElementById('edit-cid').value=cid;
-          document.getElementById('edit-savepath').value=sp;
-          document.getElementById('edit-filter').value=f;
+        function editSubInline(btn){
+          closeAllEditRows();
+          var tr=btn.closest('tr');
+          var next=tr.nextElementSibling;
+          if(next&&next.classList.contains('edit-row')){
+            next.style.display='';
+          }
+        }
+        function closeAllEditRows(){
+          document.querySelectorAll('.edit-row').forEach(function(r){r.style.display='none';});
+        }
+        async function runSub(btn,url,cid,savepath,filter,subName){
+          btn.textContent='…'; btn.disabled=true;
+          try{
+            var r=await fetch('/subs/run',{method:'POST',
+              headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+              body:new URLSearchParams({rss_url:url,cid:cid,savepath:savepath,filter:filter,sub_name:subName})});
+            var j=await r.json();
+            if(j.ok){
+              // Show message in topbar
+              var tb=document.querySelector('.topbar-msg');
+              if(tb){tb.textContent=j.msg;tb.className='topbar-msg ok';}
+              // Auto-reload after 3s to show updated cache counts
+              setTimeout(function(){location.reload();},3000);
+            }else{
+              alertModal(j.msg||'Error');
+            }
+          }catch(e){alertModal(e.message);}
+          btn.textContent='▶'; btn.disabled=false;
+        }
+        var subCacheData={};
+        async function toggleSubCache(subKey,el){
+          var row=document.getElementById('cache-'+subKey);
+          if(row.style.display==='none'){
+            row.style.display='table-row';
+            el.textContent='▼ ';
+            if(subCacheData[subKey]){
+              document.getElementById('cache-list-'+subKey).innerHTML=subCacheData[subKey];
+              return;
+            }
+            try{
+              var r=await fetch('/api/dedup/hashes?sub='+encodeURIComponent(subKey));
+              var items=await r.json();
+              if(!items||!Array.isArray(items))items=[];
+              var cnt=0;
+              var html='<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+              items.forEach(function(it){
+                cnt++;
+                var display=it.name||it.hash;
+                html+='<tr style="border-bottom:1px solid #e8ecf1;">';
+                html+='<td style="padding:3px 6px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;" title="'+(it.hash||'')+'">'+display+'</td>';
+                html+='<td style="padding:3px 6px;text-align:right;">';
+                html+='<button data-hash="'+it.hash+'" data-sub="'+subKey.replace(/"/g,'&quot;')+'" onclick="removeCacheHash(this)" style="padding:1px 6px;font-size:10px;margin:0;background:var(--danger);">✕</button>';
+                html+='</td></tr>';
+              });
+              html+='</table>';
+              if(cnt===0)html='{{index $.T "no_records"}}';
+              subCacheData[subKey]=html;
+              document.getElementById('cache-list-'+subKey).innerHTML=html;
+            }catch(e){
+              document.getElementById('cache-list-'+subKey).innerHTML='{{index .T "load_failed"}}'+e.message;
+            }
+          }else{
+            row.style.display='none';
+            el.textContent='▶ ';
+          }
+        }
+        async function removeCacheHash(btn){
+          var hash=btn.getAttribute('data-hash');
+          var sub=btn.getAttribute('data-sub');
+          if(!hash||!sub)return;
+          if(!(await confirmAsync('{{index .T "confirm_delete"}} '+hash.substring(0,12)+'... ?')))return;
+          btn.disabled=true;
+          try{
+            var form=new FormData();
+            form.append('sub',sub);
+            form.append('hash',hash);
+            var r=await fetch('/api/dedup/remove-hash',{method:'POST',body:form});
+            var j=await r.json();
+            if(j.status==='ok'){
+              var tr=btn.closest('tr');
+              if(tr)tr.remove();
+              delete subCacheData[sub];
+            }else{
+              alertModal(j.message||'Error');
+            }
+          }catch(e){
+            alertModal(e.message);
+          }
+          btn.disabled=false;
         }
       </script>
       {{if .Agent}}<div style="margin-top:10px;">
@@ -1126,20 +1656,21 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{end}}
 
     <!-- offline task list -->
-    {{if eq .Page "tasks"}}
-    <div class="card panel">
+    {{if or (eq .Page "home") (eq .Page "") (eq .Page "tasks")}}
+    <div class="card panel" style="margin-top:16px;">
       <h2>{{index .T "offline_tasks"}} ({{.TaskCount}})
         <span style="font-weight:400;font-size:12px;margin-left:8px;">
-          <span id="tab-downloading" style="cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);" onclick="switchTaskTab('downloading')">下载中 <span id="cnt-downloading"></span></span>
+          <span id="tab-downloading" style="cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);" onclick="switchTaskTab('downloading')">{{index .T "downloading"}} <span id="cnt-downloading"></span></span>
           <span style="margin:0 8px;color:var(--line);">|</span>
-          <span id="tab-failed" style="cursor:pointer;color:var(--muted);" onclick="switchTaskTab('failed')">失败 <span id="cnt-failed"></span></span>
+          <span id="tab-failed" style="cursor:pointer;color:var(--muted);" onclick="switchTaskTab('failed')">{{index .T "failed"}} <span id="cnt-failed"></span></span>
           <span style="margin:0 8px;color:var(--line);">|</span>
-          <span id="tab-done" style="cursor:pointer;color:var(--muted);" onclick="switchTaskTab('done')">已完成 <span id="cnt-done"></span></span>
+          <span id="tab-done" style="cursor:pointer;color:var(--muted);" onclick="switchTaskTab('done')">{{index .T "completed"}} <span id="cnt-done"></span></span>
         </span>
       </h2>
       <form action="/clear" method="post" style="margin-bottom:8px;">
         <select name="type" style="width:auto;display:inline;">
           <option value="1">{{index .T "clear_done"}}</option>
+          <option value="4">{{index .T "clear_running"}}</option>
           <option value="3">{{index .T "clear_failed"}}</option>
           <option value="2">{{index .T "clear_all"}}</option>
         </select>
@@ -1153,7 +1684,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <td title="{{.InfoHash}}">{{.Name}}</td>
           <td>{{.Size}}</td>
           <td>{{printf "%.0f" .Percent}}%</td>
-          <td><button onclick="copyTaskURL('{{.URL}}')" style="padding:2px 6px;font-size:10px;margin:0;" title="复制链接">📋</button></td>
+          <td><button onclick="copyTaskURL('{{.URL}}')" style="padding:2px 6px;font-size:10px;margin:0;" title="{{index $.T "copy_link_title"}}">📋</button></td>
         </tr>{{end}}
         </tbody>
       </table>
@@ -1182,7 +1713,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       function copyTaskURL(url){
         navigator.clipboard.writeText(url).then(function(){},function(){
-          prompt('复制以下链接:',url);
+          alertModal('URL: '+url);
         });
       }
       // init
@@ -1195,6 +1726,33 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         document.getElementById('cnt-done').textContent='('+c.done+')';
         switchTaskTab('downloading');
       })();
+      // Auto-refresh tasks every 10s
+      var taskRefreshTimer=setInterval(refreshTasks,10000);
+      async function refreshTasks(){
+        try{
+          var r=await fetch('/api/tasks');
+          var j=await r.json();
+          var tbody=document.querySelector('#task-table tbody');
+          if(!tbody||!j.tasks)return;
+          tbody.innerHTML=j.tasks.map(function(t){
+            return '<tr class="'+t.row_class+'" data-status="'+t.status+'" data-url="'+t.url+'">'+
+              '<td title="'+t.info_hash+'">'+t.name+'</td>'+
+              '<td>'+t.size+'</td>'+
+              '<td>'+t.percent.toFixed(0)+'%</td>'+
+              '<td><button onclick="copyTaskURL(\''+t.url+'\')" style="padding:2px 6px;font-size:10px;margin:0;" title="'+'{{index .T "copy_link_title"}}'+'">📋</button></td>'+
+              '</tr>';
+          }).join('');
+          // Re-count
+          var c={downloading:0,failed:0,done:0};
+          j.tasks.forEach(function(t){c[t.status]=(c[t.status]||0)+1;});
+          document.getElementById('cnt-downloading').textContent='('+c.downloading+')';
+          document.getElementById('cnt-failed').textContent='('+c.failed+')';
+          document.getElementById('cnt-done').textContent='('+c.done+')';
+          // Re-apply current tab
+          var active=document.querySelector('#tab-downloading[style*="accent"],#tab-failed[style*="accent"],#tab-done[style*="accent"]');
+          if(active)switchTaskTab(active.id.replace('tab-',''));
+        }catch(e){}
+      }
     </script>
     {{end}}
 
@@ -1202,285 +1760,198 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "log"}}
     <div class="card panel">
       <h2>{{index .T "runtime_log"}}</h2>
-      <div class="log-panel" style="max-height:none;">{{range .Logs}}{{.}}
+      <div class="log-panel" id="log-panel" style="max-height:none;">{{range .Logs}}{{.}}
 {{end}}</div>
     </div>
+    <script>
+      var logLastLine='';
+      var logTimer=setInterval(refreshLogs,3000);
+      async function refreshLogs(){
+        try{
+          var r=await fetch('/api/logs');
+          var j=await r.json();
+          if(!j.lines||j.lines.length===0)return;
+          var panel=document.getElementById('log-panel');
+          var last=j.lines[j.lines.length-1];
+          if(last===logLastLine)return;
+          var startIdx=0;
+          for(var i=0;i<j.lines.length;i++){if(j.lines[i]===logLastLine){startIdx=i+1;break;}}
+          for(var i=startIdx;i<j.lines.length;i++){panel.appendChild(document.createTextNode(j.lines[i]+'\n'));}
+          logLastLine=last;
+          panel.scrollTop=panel.scrollHeight;
+        }catch(e){}
+      }
+      (function(){var p=document.getElementById('log-panel');if(p){var t=p.textContent.trim();if(t)logLastLine=t.split('\n').pop();}})();
+    </script>
     {{end}}
 
-    <!-- search modal (replaces /search page) -->
-    <div class="smodal-overlay" id="search-modal">
-      <div class="smodal-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-          <h2>{{index .T "search"}}</h2>
-          <button onclick="closeSearchModal()" style="margin:0;padding:4px 12px;background:var(--danger);font-size:12px;">✕</button>
+    <!-- search page -->
+    {{if eq .Page "search"}}
+    <div class="card panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h2>{{index .T "search"}}</h2>
+      </div>
+      <form action="/search" method="post" id="search-form">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <input name="q" id="search-q" placeholder="{{index .T "search_ph"}}" value="{{.SearchQuery}}" style="flex:3;min-width:160px;" autofocus>
+          <select name="category" style="flex:1;min-width:100px;">
+            <option value="">{{index .T "all_categories"}}</option>
+            <option value="anime"{{if eq .SearchCategory "anime"}} selected{{end}}>{{index .T "category_anime"}}</option>
+            <option value="tv"{{if eq .SearchCategory "tv"}} selected{{end}}>{{index .T "category_tv"}}</option>
+            <option value="movie"{{if eq .SearchCategory "movie"}} selected{{end}}>{{index .T "category_movie"}}</option>
+            <option value="music"{{if eq .SearchCategory "music"}} selected{{end}}>{{index .T "category_music"}}</option>
+            <option value="other"{{if eq .SearchCategory "other"}} selected{{end}}>{{index .T "category_other"}}</option>
+          </select>
+          <select name="sort" style="flex:1;min-width:100px;">
+            <option value="seeds"{{if eq .SearchSort "seeds"}} selected{{end}}>{{index .T "sort_seeds"}}</option>
+            <option value="size"{{if eq .SearchSort "size"}} selected{{end}}>{{index .T "sort_size"}}</option>
+            <option value="date"{{if eq .SearchSort "date"}} selected{{end}}>{{index .T "sort_date"}}</option>
+          </select>
+          <button type="submit" style="margin-top:0;white-space:nowrap;">{{index .T "search_btn"}}</button>
         </div>
-        <form action="/search" method="post" id="search-form">
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-            <input name="q" id="search-q" placeholder="{{index .T "search_ph"}}" value="{{.SearchQuery}}" style="flex:3;min-width:160px;">
-            <select name="category" style="flex:1;min-width:100px;">
-              <option value="">全部分类</option>
-              <option value="anime"{{if eq .SearchCategory "anime"}} selected{{end}}>动漫</option>
-              <option value="tv"{{if eq .SearchCategory "tv"}} selected{{end}}>剧集</option>
-              <option value="movie"{{if eq .SearchCategory "movie"}} selected{{end}}>电影</option>
-              <option value="music"{{if eq .SearchCategory "music"}} selected{{end}}>音乐</option>
-              <option value="other"{{if eq .SearchCategory "other"}} selected{{end}}>其他</option>
-            </select>
-            <select name="sort" style="flex:1;min-width:100px;">
-              <option value="seeds"{{if eq .SearchSort "seeds"}} selected{{end}}>按做种数</option>
-              <option value="size"{{if eq .SearchSort "size"}} selected{{end}}>按大小</option>
-              <option value="date"{{if eq .SearchSort "date"}} selected{{end}}>按时间</option>
-            </select>
-            <button type="submit" style="margin-top:0;white-space:nowrap;">{{index .T "search_btn"}}</button>
-          </div>
-          {{if .IndexerList}}
-          <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
-            <span style="font-size:12px;color:var(--muted);white-space:nowrap;">搜索站点:</span>
-            {{range .IndexerList}}
-            <label style="font-size:11px;display:flex;align-items:center;gap:2px;cursor:pointer;padding:2px 6px;background:var(--bg);border:1px solid var(--line);border-radius:6px;">
-              <input type="checkbox" name="indexer" value="{{.ID}}" style="width:auto;margin:0;"{{if indexerChecked $.SearchIndexers .ID}} checked{{end}}>
-              {{.Name}}
-            </label>
-            {{end}}
-          </div>
-          {{end}}
-          <div style="margin-top:6px;display:flex;gap:8px;">
-            <button type="button" onclick="toggleSubForm()" style="margin-top:0;padding:4px 12px;font-size:11px;background:var(--accent-2);white-space:nowrap;">📌 订阅此搜索</button>
-          </div>
-        </form>
-        <!-- subscription form (hidden) -->
-        <div id="sub-form" style="display:none;margin-top:12px;padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;">
-          <h3 style="margin:0 0 10px;">📌 添加 RSS 订阅</h3>
-          <form action="/search/subscribe" method="post">
-            <input type="hidden" name="query" value="{{.SearchQuery}}">
-            <input type="hidden" name="category" value="{{.SearchCategory}}">
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-              <div style="flex:2;min-width:140px;">
-                <label style="font-size:12px;">名称</label>
-                <input name="name" placeholder="订阅名称" value="{{.SearchQuery}}" style="font-size:13px;">
-              </div>
-              <div style="flex:3;min-width:200px;">
-                <label style="font-size:12px;">RSS 地址</label>
-                <input name="url" placeholder="RSS 地址" value="{{.RssURL}}" style="font-size:13px;">
-              </div>
-              <div style="flex:1;min-width:80px;">
-                <label style="font-size:12px;">过滤 (可选)</label>
-                <input name="filter" placeholder="关键词" style="font-size:13px;">
-              </div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
-              <div style="flex:1;min-width:140px;">
-                <label style="font-size:12px;">115 目录 ID (可选)
-                  <button type="button" onclick="browseDirs()" style="padding:2px 8px;font-size:11px;margin:0 0 0 4px;background:var(--accent-2);">📁 浏览</button>
-                </label>
-                <input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;">
-              </div>
-              <div style="flex:1;min-width:100px;">
-                <label style="font-size:12px;">子目录 (可选)</label>
-                <input name="savepath" placeholder="savepath" style="font-size:13px;">
-              </div>
-              <button type="submit" style="margin-top:0;background:var(--accent-2);">添加订阅</button>
-            </div>
-          </form>
-        </div>
-        <!-- search results -->
-        <div id="search-results-area">
-          {{if .SearchResults}}
-          <h3 style="margin-top:14px;">{{index .T "search_results"}} ({{len .SearchResults}})</h3>
-          <table class="tbl">
-            <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>S</th><th>{{index .T "search_from"}}</th><th></th></tr></thead>
-            <tbody>
-            {{range .SearchResults}}<tr>
-              <td>{{if .PageURL}}<a href="{{.PageURL}}" target="_blank">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
-              <td class="muted">{{.SizeFmt}}</td>
-              <td>{{.Seeders}}</td>
-              <td class="muted">{{.IndexerName}}</td>
-              <td>
-                {{if .MagnetURL}}<form action="/add" method="post" style="display:inline;">
-                  <input type="hidden" name="tasks" value="{{.MagnetURL}}">
-                  <input type="hidden" name="cid" value="">
-                  <button type="submit" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>
-                </form>{{end}}
-              </td>
-            </tr>{{end}}
-            </tbody>
-          </table>
-          {{else}}{{if .SearchQuery}}
-          <div class="hint" style="margin-top:12px;">{{index .T "search_no_result"}}</div>
-          {{if .SearchErrors}}
-          <div style="margin-top:8px;font-size:12px;">
-            {{range $id, $err := .SearchErrors}}
-            <div style="padding:4px 8px;margin:2px 0;background:#fef2f2;color:#991b1b;border-radius:6px;word-break:break-all;">⚠ {{$err}}</div>
-            {{end}}
-          </div>
-          {{end}}
-          {{end}}{{end}}
-        </div>
-        <!-- saved searches -->
-        {{if .SavedSearches}}
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);">
-          <h3 style="margin:0 0 8px;">📌 已保存的搜索</h3>
-          {{range .SavedSearches}}
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
-            <span style="flex:1;">🔍 {{.Query}}{{if .Category}} <span style="color:var(--muted);font-size:11px;">[{{.Category}}]</span>{{end}}</span>
-            <form action="/search" method="post" style="display:inline;">
-              <input type="hidden" name="q" value="{{.Query}}">
-              <input type="hidden" name="category" value="{{.Category}}">
-              <input type="hidden" name="sort" value="{{.Sort}}">
-              <button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">搜索</button>
-            </form>
-            <form action="/search" method="post" style="display:inline;">
-              <input type="hidden" name="action" value="unsubscribe">
-              <input type="hidden" name="id" value="{{.ID}}">
-              <button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">删除</button>
-            </form>
-          </div>
+        {{if .IndexerList}}
+        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+          <span style="font-size:12px;color:var(--muted);white-space:nowrap;">{{index .T "search_sites"}}</span>
+          {{range .IndexerList}}
+          <label style="font-size:11px;display:flex;align-items:center;gap:2px;cursor:pointer;padding:2px 6px;background:var(--bg);border:1px solid var(--line);border-radius:6px;">
+            <input type="checkbox" name="indexer" value="{{.ID}}" style="width:auto;margin:0;"{{if indexerChecked $.SearchIndexers .ID}} checked{{end}}>
+            {{.Name}}
+          </label>
           {{end}}
         </div>
         {{end}}
+        {{if .RssURL}}
+        <div style="margin-top:6px;display:flex;gap:8px;">
+          <button type="button" onclick="toggleSubForm()" style="margin-top:0;padding:4px 12px;font-size:11px;background:var(--accent-2);white-space:nowrap;">{{index .T "subscribe_search"}}</button>
+        </div>
+        {{end}}
+      </form>
+      <!-- subscription form (hidden) -->
+      {{if .RssURL}}
+      <div id="sub-form" style="display:none;margin-top:12px;padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;">
+        <h3 style="margin:0 0 10px;">{{index .T "add_rss_sub_title"}}</h3>
+        <form action="/search/subscribe" method="post">
+          <input type="hidden" name="query" value="{{.SearchQuery}}"><input type="hidden" name="category" value="{{.SearchCategory}}">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:2;min-width:140px;"><label style="font-size:12px;">{{index .T "sub_name_label"}}</label><input name="name" placeholder="{{index .T "sub_name_placeholder"}}" value="{{.SearchQuery}}" style="font-size:13px;"></div>
+            <div style="flex:3;min-width:200px;"><label style="font-size:12px;">{{index .T "rss_addr_label"}}</label><input name="url" placeholder="{{index .T "rss_addr_placeholder"}}" value="{{.RssURL}}" style="font-size:13px;"></div>
+            <div style="flex:1;min-width:80px;"><label style="font-size:12px;">{{index .T "filter_label"}}</label><input name="filter" placeholder="{{index .T "filter_placeholder"}}" style="font-size:13px;"></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
+            <div style="flex:1;min-width:140px;"><label style="font-size:12px;">{{index .T "dir_id_opt"}} <button type="button" onclick="browseDirsFor('sub-cid')" style="padding:2px 8px;font-size:11px;margin:0;background:var(--accent-2);">{{index .T "browse_btn"}}</button></label><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;"></div>
+            <div style="flex:1;min-width:100px;"><label style="font-size:12px;">{{index .T "subdir_opt"}}</label><input name="savepath" placeholder="savepath" style="font-size:13px;"></div>
+            <button type="submit" style="margin-top:0;background:var(--accent-2);">{{index .T "add_sub_btn"}}</button>
+          </div>
+        </form>
       </div>
+      {{end}}
+      <!-- search results -->
+      {{if .SearchResults}}
+      <div style="margin-top:16px;">
+        <table class="tbl"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "indexer"}}</th><th></th></tr></thead><tbody>
+        {{range .SearchResults}}<tr>
+          <td>{{if .PageURL}}<a href="{{.PageURL}}" target="_blank">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
+          <td class="muted">{{.SizeFmt}}</td><td>{{.Seeders}}</td><td class="muted">{{.IndexerName}}</td>
+          <td>{{if .MagnetURL}}<button data-magnet="{{.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
+        </tr>{{end}}</tbody></table>
+      </div>
+      {{else}}{{if .SearchQuery}}<div class="hint" style="margin-top:12px;">{{index .T "search_no_result"}}</div>{{end}}{{end}}
+      {{if .SearchErrors}}{{range $id, $err := .SearchErrors}}<div style="padding:4px 8px;margin:2px 0;background:#fef2f2;color:#991b1b;border-radius:6px;word-break:break-all;">⚠ {{$err}}</div>{{end}}{{end}}
+      <!-- saved searches -->
+      {{if .SavedSearches}}<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);"><h3 style="margin:0 0 8px;">{{index .T "saved_searches_title"}}</h3>{{range .SavedSearches}}<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><span style="flex:1;">🔍 {{.Query}}{{if .Category}} <span style="color:var(--muted);font-size:11px;">[{{.Category}}]</span>{{end}}</span><form action="/search" method="post" style="display:inline;"><input type="hidden" name="q" value="{{.Query}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="sort" value="{{.Sort}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">{{index $.T "search_btn_sm"}}</button></form><form action="/search" method="post" style="display:inline;"><input type="hidden" name="action" value="unsubscribe"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">{{index $.T "delete_btn"}}</button></form></div>{{end}}</div>{{end}}
     </div>
     <script>
-      function openSearchModal(){
-        document.getElementById('search-modal').classList.add('active');
-        document.getElementById('search-q').focus();
+    // Persist search state across page navigations
+    (function(){
+      var key='pan-fetcher-search';
+      {{if .SearchQuery}}
+      sessionStorage.setItem(key,document.querySelector('.card.panel').innerHTML);
+      {{else}}
+      var saved=sessionStorage.getItem(key);
+      if(saved){
+        var card=document.querySelector('.card.panel');
+        if(card&&!document.querySelector('#search-form'))return;
+        if(card)card.innerHTML=saved;
       }
-      function closeSearchModal(){
-        document.getElementById('search-modal').classList.remove('active');
-      }
-      // Close on overlay click
-      document.getElementById('search-modal').addEventListener('click',function(e){
-        if(e.target===this)closeSearchModal();
-      });
-      // Close on Escape
-      document.addEventListener('keydown',function(e){
-        if(e.key==='Escape')closeSearchModal();
-      });
-      // Auto-open if search was performed (results or error present)
-      {{if or .SearchQuery .Error}}
-      openSearchModal();
       {{end}}
-      // Show error in modal if present
-      {{if .Error}}
-      (function(){
-        var area=document.getElementById('search-results-area');
-        var div=document.createElement('div');
-        div.style.cssText='margin-top:12px;padding:10px 12px;background:#fef2f2;color:#991b1b;border-radius:10px;font-size:14px;';
-        div.textContent='{{.Error}}';
-        area.insertBefore(div,area.firstChild);
-      })();
-      {{end}}
+    })();
+    </script>
+    {{end}}
 
+    <!-- about page -->
+    {{if eq .Page "about"}}
+    <div class="card panel">
+      <h2>{{index .T "about_title"}}</h2>
+      <p>{{index .T "about_desc"}}</p>
+      <p class="muted" style="font-size:13px;">{{index .T "about_version"}}: <code>1.0.0</code></p>
+      <p class="muted" style="font-size:13px;">{{index .T "about_author"}}</p>
+      <p class="hint">© 2025-2026 pan-fetcher</p>
+    </div>
+    <div class="card panel" style="margin-top:12px;">
+      <p style="font-size:12px;color:var(--text-muted);">
+        <a href="https://github.com/zhifengle/rss2cloud" target="_blank" rel="noopener">rss2cloud</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/Prowlarr/Prowlarr" target="_blank" rel="noopener">Prowlarr</a>
+      </p>
+    </div>
+    {{end}}
+
+    <!-- shared utility functions -->
+    <script>
       function toggleSubForm(){
         var el=document.getElementById('sub-form');
         el.style.display=el.style.display==='none'?'block':'none';
       }
+      var pendingMagnet='';
+      async function addTaskWithBrowse(magnet){
+        pendingMagnet=magnet;
+        browseCallback=function(id){closeModal();doAddTask(id);};
+        browseDirs('0');
+      }
+      async function doAddTask(cid){
+        closeModal();
+        try{
+          var body='tasks='+encodeURIComponent(pendingMagnet);
+          if(cid&&cid!=='0')body+='&cid='+encodeURIComponent(cid);
+          var r=await fetch('/add',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
+          var j=await r.json();
+          if(j.status==='ok'){alertModal('{{index .T "task_added"}}');}else{alertModal(j.message||'{{index .T "add_failed"}}');}
+        }catch(e){alertModal(e.message);}
+        pendingMagnet='';
+      }
       var browseTargetId='sub-cid';
-      function browseDirsFor(targetId){browseTargetId=targetId;browseDirs('0');}
+      var browseCallback=null;
+      function browseDirsFor(targetId){browseTargetId=targetId;browseCallback=function(id){document.getElementById(targetId).value=id;closeModal();};browseDirs('0');}
       async function browseDirs(pid){
         if(!pid)pid='0';
         try{
           let r=await fetch('/subs/dirs?pid='+pid);
           let j=await r.json();
-          if(!j.ok){showModal('错误','<p>'+j.msg+'</p>');return;}
+          if(!j.ok){showModal('{{index .T "error_label"}}','<p>'+j.msg+'</p>');return;}
           if(!j.entries)j.entries=[];
           if(!Array.isArray(j.entries))j.entries=[];
           var html='<div style="max-height:300px;overflow-y:auto;">';
           if(pid!=='0'){
-            html+='<div style="cursor:pointer;padding:6px 8px;color:var(--accent-2);border-radius:6px;" onclick="browseDirs(\''+j.parent+'\')">📁 .. (上级)</div>';
+            html+='<div style="cursor:pointer;padding:6px 8px;color:var(--accent-2);border-radius:6px;" onclick="browseDirs(\''+j.parent+'\')">{{index .T "parent_dir_label"}}</div>';
           }
-          if(j.entries.length===0)html+='<p style="color:var(--muted);">此目录下没有子文件夹</p>';
+          if(j.entries.length===0)html+='<p style="color:var(--muted);">{{index .T "no_subfolders"}}</p>';
           j.entries.forEach(function(e){
             html+='<div style="cursor:pointer;padding:6px 8px;margin:2px 0;border-radius:6px;display:flex;align-items:center;gap:8px;" onmouseover="this.style.background=\'#f0f4ff\'" onmouseout="this.style.background=\'\'">';
             html+='📁 <span style="flex:1;cursor:pointer;" onclick="browseDirs(\''+e.id+'\')">'+e.name+'</span>';
-            html+='<code style="font-size:11px;color:var(--muted);cursor:pointer;" onclick="document.getElementById(browseTargetId).value=\''+e.id+'\';closeModal()" title="选定此目录">'+e.id+'</code></div>';
+            html+='<code style="font-size:11px;color:var(--muted);cursor:pointer;" onclick="browseCallback(\''+e.id+'\')" title="选定此目录">'+e.id+'</code></div>';
           });
           html+='</div>';
-          updateBrowseModal('选择 115 目录 (当前: '+pid+')',html);
-        }catch(e){showModal('错误','<p>'+e.message+'</p>');}
+          updateBrowseModal('{{index .T "select_dir_title"}}'.replace('%s',pid),html,pid);
+        }catch(e){showModal('{{index .T "error_label"}}','<p>'+e.message+'</p>');}
       }
-      function updateBrowseModal(title,body){
+      function updateBrowseModal(title,body,pid){
         document.getElementById('g-modal-title').textContent=title;
         document.getElementById('g-modal-body').innerHTML=body;
         var btns=document.getElementById('g-modal-btns');
-        btns.innerHTML='<button onclick="closeModal()" style="margin:0;padding:6px 16px;background:var(--danger);">关闭</button>';
+        btns.innerHTML='<button onclick="browseCallback(\''+pid+'\')" style="margin:0;padding:6px 16px;background:var(--accent-2);">{{index .T "select_current_dir"}}</button><button onclick="closeModal()" style="margin:0;padding:6px 16px;background:var(--danger);">{{index .T "close_btn"}}</button>';
         document.getElementById('g-modal').style.display='flex';
       }
     </script>
-
-    <!-- dedup library -->
-    {{if eq .Page "dedup"}}
-    <div class="card panel">
-      <h2>{{index .T "dedup_title"}}</h2>
-      {{if .DedupEntries}}
-      <table class="tbl">
-        <thead><tr><th>订阅名称</th><th>缓存数</th><th></th></tr></thead>
-        <tbody>
-        {{range .DedupEntries}}<tr>
-          <td>
-            <span style="cursor:pointer;user-select:none;" onclick="toggleDedupHashes('{{.SubKey}}',this)">▶ {{.SubKey}}</span>
-          </td>
-          <td class="muted"><span id="cnt-{{.SubKey}}">{{.Count}}</span> 条</td>
-          <td>
-            <form action="/dedup/clear" method="post" style="display:inline;">
-              <input type="hidden" name="sub" value="{{.SubKey}}">
-              <button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);" onclick="return confirm('确定清空 {{.SubKey}} 的缓存记录？')">{{index $.T "dedup_clear_sub"}}</button>
-            </form>
-          </td>
-        </tr>
-        <tr id="hashes-{{.SubKey}}" style="display:none;"><td colspan="3" style="padding:0;">
-          <div style="padding:4px 8px;background:#f8fafc;max-height:300px;overflow-y:auto;" id="hash-list-{{.SubKey}}">加载中…</div>
-        </td></tr>
-        {{end}}
-        </tbody>
-      </table>
-      {{else}}
-      <div class="hint">{{index .T "dedup_empty"}}</div>
-      {{end}}
-    </div>
-    <script>
-      var dedupCache={};
-      async function toggleDedupHashes(subKey,el){
-        var row=document.getElementById('hashes-'+subKey);
-        if(row.style.display==='none'){
-          row.style.display='table-row';
-          el.textContent=el.textContent.replace('▶','▼');
-          if(dedupCache[subKey]){
-            document.getElementById('hash-list-'+subKey).innerHTML=dedupCache[subKey];
-            return;
-          }
-          try{
-            var r=await fetch('/api/dedup/hashes?sub='+encodeURIComponent(subKey));
-            var items=await r.json();
-            if(!items||!Array.isArray(items))items=[];
-            var cnt=0;
-            var html='<table style="width:100%;font-size:11px;border-collapse:collapse;">';
-            items.forEach(function(it){
-              cnt++;
-              var shortUrl=it.url?it.url.split('/').pop():'';
-              html+='<tr style="border-bottom:1px solid #e8ecf1;">';
-              html+='<td style="padding:3px 6px;font-family:monospace;color:#374151;">'+it.hash+'</td>';
-              html+='<td style="padding:3px 6px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);" title="'+(it.url||'')+'">'+(shortUrl||'(无)')+'</td>';
-              html+='<td style="padding:3px 6px;text-align:right;">';
-              if(it.url){
-                html+='<form action="/torrent/clear" method="post" style="display:inline;"><input type="hidden" name="url" value="'+it.url+'"><button type="submit" style="padding:1px 6px;font-size:10px;margin:0;background:var(--danger);" onclick="return confirm(\'删除此 URL 映射？\')">✕</button></form>';
-              }
-              html+='</td></tr>';
-            });
-            html+='</table>';
-            if(cnt===0)html='(暂无记录)';
-            dedupCache[subKey]=html;
-            document.getElementById('hash-list-'+subKey).innerHTML=html;
-            document.getElementById('cnt-'+subKey).textContent=cnt;
-          }catch(e){
-            document.getElementById('hash-list-'+subKey).innerHTML='加载失败: '+e.message;
-          }
-        }else{
-          row.style.display='none';
-          el.textContent=el.textContent.replace('▼','▶');
-        }
-      }
-    </script>
-    {{end}}
 
     <!-- indexer management -->
     {{if eq .Page "indexers"}}
@@ -1500,6 +1971,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <td class="muted test-time" style="font-size:12px;">{{.LastTest}}</td>
           <td style="white-space:nowrap;">
             <button onclick="testIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent-2);">🔬</button>
+            <button onclick="editIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;">✎</button>
             {{if .HasLogin}}<button onclick="showLogin('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--warn);">🔑</button>{{end}}
             <button onclick="deactivateIdx('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="移回索引器库">−</button>
           </td>
@@ -1514,18 +1986,28 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <!-- indexer library -->
     <div class="card panel" style="margin-top:16px;">
       <h2>{{index .T "idx_library"}} (<span id="lib-count">{{len .IndexerLibrary}}</span>)
-        <button onclick="activateSelected()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent);">{{index .T "idx_batch_add"}}</button>
+        <button onclick="newIdx()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent-2);">+ New</button>
+        <button onclick="activateSelected()" style="margin:0 0 0 8px;padding:4px 12px;font-size:12px;background:var(--accent);">{{index .T "idx_batch_add"}}</button>
       </h2>
       {{if .IndexerLibrary}}
-      <div id="idx-library" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
+      <table class="tbl" id="idx-library">
+        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>Lang</th><th></th></tr></thead>
+        <tbody>
         {{range .IndexerLibrary}}
-          <label id="lib-{{.ID}}" style="padding:4px 10px;font-size:12px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:4px;">
-            <input type="checkbox" name="ids" value="{{.ID}}" style="width:auto;margin:0;">
-            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{{typeColor .Type}};flex-shrink:0;" title="{{.Type}}"></span>
-            {{.Name}} <span style="color:var(--muted);font-size:10px;">{{.Language}}</span>
-          </label>
+          <tr id="lib-{{.ID}}">
+            <td><input type="checkbox" name="ids" value="{{.ID}}" style="width:auto;margin:0;"></td>
+            <td><strong>{{.Name}}</strong></td>
+            <td class="muted">{{.Type}}</td>
+            <td class="muted">{{.Language}}</td>
+            <td style="white-space:nowrap;">
+              <button onclick="activateSingle('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活">+</button>
+              <button onclick="editIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;">✎</button>
+              <button onclick="deleteIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="删除定义">✕</button>
+            </td>
+          </tr>
         {{end}}
-      </div>
+        </tbody>
+      </table>
       {{else}}
       <div class="hint">{{index .T "idx_lib_empty"}}</div>
       {{end}}
@@ -1560,13 +2042,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       async function testAll(){
         let r=await fetch('/indexers/testall',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}});
         let j=await r.json();
+        var now=new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
         for(let id in j){
           let dot=document.querySelector('#row-'+id+' .health-dot');
           let errEl=document.querySelector('#row-'+id+' .err-msg');
+          let timeEl=document.querySelector('#row-'+id+' .test-time');
           if(dot){
             if(j[id]==='ok'){dot.style.color='var(--accent-2)';if(errEl)errEl.textContent='';}
             else{dot.style.color='var(--danger)';if(errEl)errEl.textContent=j[id];}
           }
+          if(timeEl)timeEl.textContent=now;
         }
       }
 
@@ -1576,14 +2061,14 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       async function showLogin(id,name){
-        var body='<div><label>用户名</label><input id="login-user" style="width:100%;"></div>';
-        body+='<div style="margin-top:8px;"><label>密码</label><input id="login-pass" type="password" style="width:100%;"></div>';
-        showModal('登录 - '+name, body, [
-          {text:'取消',cls:'var(--danger)',cb:function(){closeModal()}},
-          {text:'登录',cs:'var(--accent-2)',cb:async function(){
+        var body='<div><label>{{index .T "username_label"}}</label><input id="login-user" style="width:100%;"></div>';
+        body+='<div style="margin-top:8px;"><label>{{index .T "password_label"}}</label><input id="login-pass" type="password" style="width:100%;"></div>';
+        showModal('{{index .T "login_label"}} - '+name, body, [
+          {text:'{{index .T "cancel"}}',cls:'var(--danger)',cb:function(){closeModal()}},
+          {text:'{{index .T "login_label"}}',cs:'var(--accent-2)',cb:async function(){
             var u=document.getElementById('login-user').value;
             var p=document.getElementById('login-pass').value;
-            if(!u||!p){showModal('错误','<p>请输入用户名和密码</p>');return;}
+            if(!u||!p){showModal('{{index .T "error_label"}}','<p>{{index .T "credentials_required"}}</p>');return;}
             closeModal();
             try{
               let r=await fetch('/indexers/login',{
@@ -1592,9 +2077,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
                 headers:{'X-Requested-With':'XMLHttpRequest'}
               });
               let j=await r.json();
-              if(j.ok){showModal('成功','<p>登录成功</p>');testIdx(id,name);}
-              else{showModal('失败','<p>'+j.msg+'</p>');}
-            }catch(e){showModal('错误','<p>'+e.message+'</p>');}
+              if(j.ok){showModal('{{index .T "success_label"}}','<p>{{index .T "login_success_msg"}}</p>');testIdx(id,name);}
+              else{showModal('{{index .T "failed"}}','<p>'+j.msg+'</p>');}
+            }catch(e){showModal('{{index .T "error_label"}}','<p>'+e.message+'</p>');}
           }}
         ]);
       }
@@ -1606,6 +2091,70 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         checks.forEach(c=>ids.push(c.value));
         await apiPost('activate_batch',{ids:ids});
         location.reload();
+      }
+
+      async function editIdx(id,name){
+        try{
+          var r=await fetch('/indexers/edit?id='+encodeURIComponent(id));
+          var j=await r.json();
+          if(!j.ok){alertModal(j.msg);return;}
+          showModal('Edit: '+name,
+            '<textarea id="edit-yaml" style="width:100%;height:400px;font-family:monospace;font-size:12px;">'+
+            j.yaml.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>',
+            [
+              {text:'Cancel',cls:'var(--danger)',cb:function(){closeModal()}},
+              {text:'Save',cls:'var(--accent-2)',cb:async function(){
+                var y=document.getElementById('edit-yaml').value;
+                var r2=await fetch('/indexers/edit?id='+encodeURIComponent(id),
+                  {method:'POST',body:new URLSearchParams({yaml:y}),
+                   headers:{'X-Requested-With':'XMLHttpRequest'}});
+                var j2=await r2.json();
+                if(j2.ok){closeModal();location.reload();}
+                else{alertModal('Save failed: '+j2.msg);}
+              }}
+            ]
+          );
+        }catch(e){alertModal(e.message);}
+      }
+
+      async function activateSingle(id){
+        await apiPost('activate',{id});
+        location.reload();
+      }
+
+      async function deleteIdx(id,name){
+        if(!(await confirmAsync('Delete "'+name+'"? This removes the YAML file permanently.'))) return;
+        try{
+          var r=await fetch('/indexers/delete',{method:'POST',body:new URLSearchParams({id:id}),headers:{'X-Requested-With':'XMLHttpRequest'}});
+          var j=await r.json();
+          if(j.ok){var row=document.getElementById('lib-'+id);if(row)row.style.display='none';}
+          else{alertModal(j.msg);}
+        }catch(e){alertModal(e.message);}
+      }
+
+      function newIdx(){
+        showModal('New Indexer',
+          '<label>ID:</label><input id="new-id" style="width:100%;" placeholder="e.g. mysite">',
+          [
+            {text:'Cancel',cls:'var(--danger)',cb:function(){closeModal()}},
+            {text:'Create',cls:'var(--accent-2)',cb:async function(){
+              var id=document.getElementById('new-id').value.trim();
+              if(!id){alertModal('Please enter an ID');return;}
+              var tmpl='---\nid: '+id+'\nname: My Site\ntype: public\nlanguage: zh-CN\nlinks:\n  - https://\n\ncaps:\n  categories:\n    1: Other\n  modes:\n    search: [q]\n\nsearch:\n  paths:\n    - path: /search\n  inputs:\n    q: "___KEYWORDS___"\n  rows:\n    selector: table tr\n  fields:\n    title:\n      selector: a\n    details:\n      selector: a\n      attribute: href\n    download:\n      selector: a[href*=magnet]\n      attribute: href\n    size:\n      selector: .size\n    date:\n      selector: .date\n    seeders:\n      selector: .seeders\n';
+              closeModal();
+              showModal('New: '+id,'<textarea id="new-yaml" style="width:100%;height:400px;font-family:monospace;font-size:12px;">'+tmpl.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>',[
+                {text:'Cancel',cls:'var(--danger)',cb:function(){closeModal()}},
+                {text:'Save',cls:'var(--accent-2)',cb:async function(){
+                  var y=document.getElementById('new-yaml').value;
+                  var r=await fetch('/indexers/edit?id='+encodeURIComponent(id),{method:'POST',body:new URLSearchParams({yaml:y}),headers:{'X-Requested-With':'XMLHttpRequest'}});
+                  var j=await r.json();
+                  if(j.ok){closeModal();location.reload();}
+                  else{alertModal('Failed: '+j.msg);}
+                }}
+              ]);
+            }}
+          ]
+        );
       }
     </script>
     {{end}}
@@ -1642,7 +2191,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
               var box=document.getElementById('qr-box');
               box.style.display='block';
               var btn=document.getElementById('qr-login-btn');
-              btn.disabled=true;btn.textContent='等待中...';
+              btn.disabled=true;btn.textContent='{{index .T "waiting"}}';
               try {
                 let r=await fetch('/login/qrcode',{method:'POST'});
                 let d=await r.json();
@@ -1693,32 +2242,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <label>{{index .T "cooldown_max"}}</label>
             <input name="cooldown_max" type="number" value="{{.Settings.CooldownMaxMs}}">
           </div>
-          <div style="flex:0.5;min-width:80px;">
-            <label style="display:flex;align-items:center;gap:4px;">
-              <input type="checkbox" name="disable_cache" {{if .Settings.DisableCache}}checked{{end}}> {{index .T "disable_cache"}}
-            </label>
-          </div>
           <div style="flex:1;min-width:120px;">
             <label>{{index .T "web_pw"}}</label>
             <input name="web_password" type="password" placeholder="{{index .T "web_pw_ph"}}" value="{{.Settings.WebPassword}}" maxlength="128">
           </div>
-          <div style="flex:0.5;min-width:80px;">
-            <label>{{index .T "lang_label"}}</label>
-            <select name="lang">
-              <option value="zh"{{if eq .Lang "zh"}} selected{{end}}>中文</option>
-              <option value="en"{{if eq .Lang "en"}} selected{{end}}>English</option>
-            </select>
-          </div>
           <div style="flex:2;min-width:200px;">
-            <label>HTTP 代理</label>
+            <label>{{index .T "http_proxy_label"}}</label>
             <input name="proxy_http" placeholder="http://127.0.0.1:7890" value="{{.ProxyHTTP}}">
           </div>
           <div style="flex:0.8;min-width:100px;">
-            <label>订阅间隔(分)</label>
-            <input name="subs_interval" type="number" placeholder="0=不自动" value="{{.Settings.SubsInterval}}" min="0" style="font-size:13px;">
+            <label>{{index .T "subs_interval_label"}}</label>
+            <input name="subs_interval" type="number" placeholder="{{index .T "subs_interval_ph"}}" value="{{.Settings.SubsInterval}}" min="0" style="font-size:13px;">
           </div>
           <button type="submit" style="margin-top:0;">{{index .T "save"}}</button>
-          <button type="button" onclick="restartServer()" style="margin-top:0;background:var(--danger);">🔄 重启服务</button>
+          <button type="button" onclick="restartServer()" style="margin-top:0;background:var(--danger);">{{index .T "restart_service_btn"}}</button>
         </div>
         <div class="hint">{{index .T "db_path"}}: {{.Settings.DatabasePath}}</div>
       </form>
@@ -1742,16 +2279,27 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       document.getElementById('g-modal-body').innerHTML=body;
       var btns=document.getElementById('g-modal-btns');
       btns.innerHTML='';
-      (buttons||[{text:'确定',cls:'',cb:function(){closeModal()}}]).forEach(function(b){
+      (buttons||[{text:'{{index .T "confirm_btn"}}',cls:'',cb:function(){closeModal()}}]).forEach(function(b){
         var btn=document.createElement('button');
         btn.textContent=b.text;btn.style.margin='0';btn.style.padding='6px 16px';
         if(b.cls)btn.style.background=b.cls;
+        if(b.id)btn.id=b.id;
         btn.onclick=function(){if(b.cb)b.cb();};
         btns.appendChild(btn);
       });
       document.getElementById('g-modal').style.display='flex';
     }
     function closeModal(){document.getElementById('g-modal').style.display='none';modalCb=null;}
+    function alertModal(msg){showModal('',msg,[{text:'OK',cls:'var(--accent)',cb:function(){closeModal()}}]);}
+    async function confirmAsync(msg){return new Promise(function(resolve){showModal('',msg,[{text:'Cancel',cls:'var(--danger)',cb:function(){closeModal();resolve(false);}},{text:'OK',cls:'var(--accent)',cb:function(){closeModal();resolve(true);}}]);});}
+    async function promptModal(title,label,defaultValue){return new Promise(function(resolve){var dv=(defaultValue||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');var body='<div style="margin-bottom:6px;font-size:13px;color:var(--muted);">'+label+'</div><input id="g-modal-input" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:14px;box-sizing:border-box;" value="'+dv+'" onkeydown="if(event.key===&quot;Enter&quot;)document.getElementById(&quot;g-modal-btn-ok&quot;).click()" autofocus>';showModal(title,body,[{text:'Cancel',cls:'var(--danger)',cb:function(){closeModal();resolve(null);}},{text:'OK',cls:'var(--accent)',id:'g-modal-btn-ok',cb:function(){var v=document.getElementById('g-modal-input').value.trim();closeModal();resolve(v);}}]);});}
+    function submitConfirm(form,msg){if(event)event.preventDefault();confirmAsync(msg).then(function(ok){if(ok)form.submit();});}
+    async function fsApi(endpoint,body){var r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body)});var t=await r.text();try{return JSON.parse(t);}catch(e){return{status:'error',message:t}}}
+    async function fsRename(id,name){var nn=await promptModal('{{index .T "rename"}}','{{index .T "new_name"}}:',name);if(!nn||nn===name)return;var r=await fsApi('/api/fs/rename',{id:id,name:nn});if(r.status==='ok')location.reload();else alertModal(r.message||'Error');}
+    async function fsDelete(id,name){var ok=await confirmAsync('{{index .T "confirm_delete"}} '+name+' ?');if(!ok)return;var r=await fsApi('/api/fs/delete',{id:id});if(r.status==='ok')location.reload();else alertModal(r.message||'Error');}
+    async function fsNewFolder(parentId){var name=await promptModal('{{index .T "new_folder"}}','{{index .T "folder_name"}}:','');if(!name)return;var r=await fsApi('/api/fs/mkdir',{parent_id:parentId,name:name});if(r.status==='ok')location.reload();else alertModal(r.message||'Error');}
+    async function fsMove(id,name){var target=await promptModal('{{index .T "move"}}','{{index .T "target_dir_id"}} '+name+':','');if(!target)return;var r=await fsApi('/api/fs/move',{id:id,target_dir:target});if(r.status==='ok')location.reload();else alertModal(r.message||'Error');}
+    async function fsCopy(id,name){var target=await promptModal('{{index .T "copy"}}','{{index .T "target_dir_id"}} '+name+':','');if(!target)return;var r=await fsApi('/api/fs/copy',{id:id,target_dir:target});if(r.status==='ok')location.reload();else alertModal(r.message||'Error');}
   </script>
 </body>
 </html>`))
@@ -1759,9 +2307,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 // ---------- server lifecycle ----------
 
 func New(agent *p115pkg.Agent, port int) *Server {
-	s := &Server{Port: port, fsCache: make(map[string]fsCacheEntry)}
-	// Only assign if non-nil to avoid the Go nil-interface trap:
-	// a nil *p115pkg.Agent wrapped in the Agent interface is NOT == nil.
+	s := &Server{Port: port, fsCache: make(map[string]fsCacheEntry), entryCache: make(map[string]p115pkg.DirEntry)}
 	if agent != nil {
 		agent.Dedup = globalDedup
 		s.Agent = agent
@@ -1834,7 +2380,7 @@ func (s *Server) autoRunSubscriptions() {
 						}
 					}()
 					if s.Agent != nil && e.Cid != "" {
-						s.Agent.QuickGrabRSS(url, e.Cid, e.SavePath, e.Filter, e.Name)
+						s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, e.Name)
 					}
 				}()
 				ran++
@@ -1873,9 +2419,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/", s.authCheck(s.handleDashboard))
 	mux.HandleFunc("/add", s.authCheck(s.handleAddTask))
-	mux.HandleFunc("/rss/quick", s.authCheck(s.handleQuickGrab))
+	mux.HandleFunc("/rss/feed", s.authCheck(s.handleRSSFeed))
 	mux.HandleFunc("/clear", s.authCheck(s.handleClearTask))
 	mux.HandleFunc("/fs", s.authCheck(s.handleFileSystem))
+	mux.HandleFunc("/api/fs/mkdir", s.authCheck(s.handleFSMkdir))
+	mux.HandleFunc("/api/fs/rename", s.authCheck(s.handleFSRename))
+	mux.HandleFunc("/api/fs/delete", s.authCheck(s.handleFSDelete))
+	mux.HandleFunc("/api/fs/move", s.authCheck(s.handleFSMove))
+	mux.HandleFunc("/api/fs/copy", s.authCheck(s.handleFSCopy))
 	mux.HandleFunc("/subs", s.authCheck(s.handleSubscriptions))
 	mux.HandleFunc("/subs/run", s.authCheck(s.handleSubsRun))
 	mux.HandleFunc("/settings", s.authCheck(s.handleSettings))
@@ -1889,16 +2440,21 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/indexers/test", s.authCheck(s.handleIndexerTest))
 	mux.HandleFunc("/indexers/testall", s.authCheck(s.handleIndexerTestAll))
 	mux.HandleFunc("/indexers/login", s.authCheck(s.handleIndexerLogin))
+	mux.HandleFunc("/indexers/edit", s.authCheck(s.handleIndexerEdit))
+	mux.HandleFunc("/indexers/delete", s.authCheck(s.handleIndexerDelete))
 	mux.HandleFunc("/search/subscribe", s.authCheck(s.handleSearchSubscribe))
 	mux.HandleFunc("/rss/search", s.handleRssSearch)
 	mux.HandleFunc("/subs/dirs", s.authCheck(s.handleSubsDirs))
-	mux.HandleFunc("/dedup", s.authCheck(s.handleDedup))
 	mux.HandleFunc("/dedup/clear", s.authCheck(s.handleDedupClear))
 	mux.HandleFunc("/api/dedup/hashes", s.authCheck(s.handleDedupHashes))
+	mux.HandleFunc("/api/dedup/remove-hash", s.authCheck(s.handleDedupRemoveHash))
 	mux.HandleFunc("/torrent", s.authCheck(s.handleTorrent))
 	mux.HandleFunc("/torrent/clear", s.authCheck(s.handleTorrentClear))
-	mux.HandleFunc("/tasks", s.authCheck(s.handleTasks))
 	mux.HandleFunc("/log", s.authCheck(s.handleLogPage))
+	mux.HandleFunc("/about", s.authCheck(s.handleAbout))
+	mux.HandleFunc("/api/tasks", s.authCheck(s.handleAPITasks))
+	mux.HandleFunc("/api/logs", s.authCheck(s.handleAPILogs))
+	mux.HandleFunc("/api/lang", s.authCheck(s.handleAPILang))
 }
 
 // ---------- aggregated RSS search endpoint ----------
@@ -1944,10 +2500,11 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` + "\n"))
 	w.Write([]byte(`<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">` + "\n"))
 	w.Write([]byte(`<channel>` + "\n"))
-	fmt.Fprintf(w, "<title>%s - pan-fetcher 聚合搜索</title>\n", xmlEscape(q))
-	fmt.Fprintf(w, "<description>聚合搜索: %s</description>\n", xmlEscape(q))
-	fmt.Fprintf(w, "<link>http://localhost:%d/search</link>\n", s.Port)
-	fmt.Fprintf(w, "<language>zh-cn</language>\n")
+	rssLang := s.langFromAgent()
+	fmt.Fprintf(w, "<title>%s - %s</title>\n", xmlEscape(q), tr(rssLang, "rss_feed_title"))
+	fmt.Fprintf(w, "<description>%s</description>\n", xmlEscape(trf(rssLang, "rss_feed_desc", q)))
+	fmt.Fprintf(w, "<link>http://%s/search</link>\n", r.Host)
+	fmt.Fprintf(w, "<language>%s</language>\n", rssLang)
 
 	for _, result := range se.Results {
 		guid := result.MagnetURL
@@ -1960,18 +2517,21 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		// Convert .torrent URL to magnet (cached in dedup)
 		if strings.HasSuffix(strings.ToLower(guid), ".torrent") {
 			if hash, ok := globalDedup.GetTorrentHash(guid); ok {
-				guid = "magnet:?xt=urn:btih:" + hash
+				guid = "magnet:?xt=urn:btih:" + hash + "&dn=" + url.QueryEscape(result.Title)
 			} else {
 				m := rsssite.NormalizeTaskURL(guid, result.Title)
 				if strings.HasPrefix(m, "magnet:?") {
 					if h := extractInfoHashFromMagnet(m); h != "" {
 						globalDedup.SetTorrentHash(guid, h)
-						guid = "magnet:?xt=urn:btih:" + h
+						guid = "magnet:?xt=urn:btih:" + h + "&dn=" + url.QueryEscape(result.Title)
 					} else {
 						guid = m
 					}
 				}
 			}
+		} else if strings.HasPrefix(guid, "magnet:?") && !strings.Contains(guid, "dn=") && result.Title != "" {
+			// Add dn= parameter to existing magnet links for display names
+			guid = guid + "&dn=" + url.QueryEscape(result.Title)
 		}
 		pubDate := ""
 		if !result.PublishDate.IsZero() {
@@ -2044,22 +2604,31 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Agent == nil {
-		s.renderResult(w, "", "115 未登录，请先在设置中配置 Cookies")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"error","message":"not logged in"}`)
 		return
 	}
 	task, err := decodeOfflineTask(r)
 	if err != nil {
-		s.renderResult(w, "", err.Error())
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"error","message":"%s"}`, err.Error())
 		return
 	}
-	s.Agent.AddMagnetTask(task.Tasks, task.Cid, task.SavePath)
+	err = s.Agent.AddMagnetTask(task.Tasks, task.Cid, task.SavePath)
+	if err != nil {
+		log.Printf("[task] web submit failed: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"error","message":"%s"}`, err.Error())
+		return
+	}
 	log.Printf("[task] web submitted %d tasks, cid=%s", len(task.Tasks), task.Cid)
-	s.renderResult(w, fmt.Sprintf("已提交 %d 个磁力任务", len(task.Tasks)), "")
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"ok","message":"%s"}`, trf(s.langFromAgent(), "tasks_submitted_fmt", len(task.Tasks)))
 }
 
-func (s *Server) handleQuickGrab(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRSSFeed(w http.ResponseWriter, r *http.Request) {
 	if s.Agent == nil {
-		s.renderResult(w, "", "115 未登录")
+		s.renderMsg(w, "", "err_not_logged_in")
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -2073,18 +2642,19 @@ func (s *Server) handleQuickGrab(w http.ResponseWriter, r *http.Request) {
 	rssURL := strings.TrimSpace(r.FormValue("rss_url"))
 	keyword := strings.TrimSpace(r.FormValue("keyword"))
 	cid := strings.TrimSpace(r.FormValue("cid"))
+	savepath := strings.TrimSpace(r.FormValue("savepath"))
 	if rssURL == "" {
-		s.renderResult(w, "", "RSS 地址不能为空")
+		s.renderMsg(w, "", "err_rss_empty")
 		return
 	}
-	go s.Agent.QuickGrabRSS(rssURL, cid, "", keyword, "manual")
-	log.Printf("[quick] web triggered: %s keyword=%q cid=%s", rssURL, keyword, cid)
-	s.renderResult(w, fmt.Sprintf("快速抓取已启动: %s", rssURL), "")
+	go s.Agent.ProcessRSSFeed(rssURL, cid, savepath, keyword, rssURL)
+	log.Printf("[feed] web triggered: %s keyword=%q cid=%s savepath=%q", rssURL, keyword, cid, savepath)
+	s.renderMsgf(w, "quick_started_fmt", rssURL)
 }
 
 func (s *Server) handleClearTask(w http.ResponseWriter, r *http.Request) {
 	if s.Agent == nil {
-		s.renderResult(w, "", "115 未登录")
+		s.renderMsg(w, "", "err_not_logged_in")
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -2097,7 +2667,7 @@ func (s *Server) handleClearTask(w http.ResponseWriter, r *http.Request) {
 	}
 	typeNum, err := strconv.Atoi(strings.TrimSpace(r.FormValue("type")))
 	if err != nil || typeNum < 1 || typeNum > 6 {
-		s.renderResult(w, "", "清理类型必须是 1-6")
+		s.renderMsg(w, "", "err_clear_type")
 		return
 	}
 	if err := s.Agent.OfflineClear(typeNum - 1); err != nil {
@@ -2106,7 +2676,7 @@ func (s *Server) handleClearTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[task] clear type=%d executed", typeNum)
-	s.renderResult(w, fmt.Sprintf("已执行清理类型 %d", typeNum), "")
+	s.renderMsgf(w, "clear_executed_fmt", typeNum)
 }
 
 // ---------- filesystem browser ----------
@@ -2126,8 +2696,7 @@ type fsBreadcrumb struct {
 
 func (s *Server) handleFileSystem(w http.ResponseWriter, r *http.Request) {
 	if s.Agent == nil {
-		data := s.pageData("", "115 未登录，请先在设置中配置 Cookies")
-		dashboardTemplate.Execute(w, data)
+		http.Redirect(w, r, "/settings?err=not_logged_in", http.StatusSeeOther)
 		return
 	}
 	dirID := strings.TrimSpace(r.URL.Query().Get("dir"))
@@ -2151,21 +2720,23 @@ func (s *Server) handleFileSystem(w http.ResponseWriter, r *http.Request) {
 			s.fsCache[cacheKey] = fsCacheEntry{entries: entries, expires: time.Now().Add(30 * time.Second)}
 			s.fsCacheMu.Unlock()
 		} else {
-			data := s.pageData("", "读取目录失败: "+err.Error())
+			lang := s.langFromAgent()
+			data := s.pageDataWithCache("fs", tr(lang, "err_read_dir")+err.Error(), "")
 			dashboardTemplate.Execute(w, data)
 			return
 		}
 	}
 
-	// Build breadcrumb
+	// Build breadcrumb (with entry cache)
+	lang := s.langFromAgent()
 	var crumbs []fsBreadcrumb
 	currentID := dirID
 	for i := 0; i < 20; i++ {
 		if currentID == "0" || currentID == "" {
-			crumbs = append([]fsBreadcrumb{{ID: "0", Name: "根目录"}}, crumbs...)
+			crumbs = append([]fsBreadcrumb{{ID: "0", Name: tr(lang, "root_dir")}}, crumbs...)
 			break
 		}
-		e, err := s.Agent.GetEntry(currentID)
+		e, err := s.getEntryCached(currentID)
 		if err != nil {
 			crumbs = append([]fsBreadcrumb{{ID: currentID, Name: currentID}}, crumbs...)
 			break
@@ -2189,13 +2760,12 @@ func (s *Server) handleFileSystem(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Build parent dir ID for "up" link
 	parentID := "0"
 	if len(crumbs) >= 2 {
 		parentID = crumbs[len(crumbs)-2].ID
 	}
 
-	data := s.pageData("", "")
+	data := s.pageDataWithCache("fs", "", "")
 	data.Page = "fs"
 	data.FSEntries = fsEntries
 	data.FSCrumbs = crumbs
@@ -2203,6 +2773,139 @@ func (s *Server) handleFileSystem(w http.ResponseWriter, r *http.Request) {
 	data.FSParentID = parentID
 
 	dashboardTemplate.Execute(w, data)
+}
+
+// getEntryCached returns a cached DirEntry or fetches+stores it.
+func (s *Server) getEntryCached(entryID string) (p115pkg.DirEntry, error) {
+	s.entryCacheMu.Lock()
+	if e, ok := s.entryCache[entryID]; ok {
+		s.entryCacheMu.Unlock()
+		return e, nil
+	}
+	s.entryCacheMu.Unlock()
+
+	e, err := s.Agent.GetEntry(entryID)
+	if err != nil {
+		return p115pkg.DirEntry{}, err
+	}
+	s.entryCacheMu.Lock()
+	if len(s.entryCache) > 200 {
+		s.entryCache = make(map[string]p115pkg.DirEntry) // simple eviction
+	}
+	s.entryCache[entryID] = e
+	s.entryCacheMu.Unlock()
+	return e, nil
+}
+
+// ---------- FS API handlers ----------
+
+func (s *Server) writeFSResult(w http.ResponseWriter, status, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	if msg == "" {
+		fmt.Fprintf(w, `{"status":"%s"}`, status)
+	} else {
+		fmt.Fprintf(w, `{"status":"%s","message":"%s"}`, status, msg)
+	}
+}
+
+func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	parentID := strings.TrimSpace(r.FormValue("parent_id"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		s.writeFSResult(w, "error", "Folder name is required")
+		return
+	}
+	_, err := s.Agent.Mkdir(parentID, name)
+	if err != nil {
+		s.writeFSResult(w, "error", err.Error())
+		return
+	}
+	log.Printf("[fs] mkdir %q in parent=%s", name, parentID)
+	s.invalidateFSCache(parentID)
+	s.writeFSResult(w, "ok", "")
+}
+
+func (s *Server) handleFSRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entryID := strings.TrimSpace(r.FormValue("id"))
+	newName := strings.TrimSpace(r.FormValue("name"))
+	if entryID == "" || newName == "" {
+		s.writeFSResult(w, "error", "ID and name are required")
+		return
+	}
+	if err := s.Agent.RenameEntry(entryID, newName); err != nil {
+		s.writeFSResult(w, "error", err.Error())
+		return
+	}
+	log.Printf("[fs] rename id=%s -> %q", entryID, newName)
+	s.invalidateFSCache("")
+	s.writeFSResult(w, "ok", "")
+}
+
+func (s *Server) handleFSDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entryID := strings.TrimSpace(r.FormValue("id"))
+	if entryID == "" {
+		s.writeFSResult(w, "error", "ID is required")
+		return
+	}
+	if err := s.Agent.DeleteEntry(entryID); err != nil {
+		s.writeFSResult(w, "error", err.Error())
+		return
+	}
+	log.Printf("[fs] delete id=%s", entryID)
+	s.invalidateFSCache("")
+	s.writeFSResult(w, "ok", "")
+}
+
+func (s *Server) handleFSMove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entryID := strings.TrimSpace(r.FormValue("id"))
+	targetDirID := strings.TrimSpace(r.FormValue("target_dir"))
+	if entryID == "" || targetDirID == "" {
+		s.writeFSResult(w, "error", "ID and target_dir are required")
+		return
+	}
+	if err := s.Agent.MoveEntry(targetDirID, entryID); err != nil {
+		s.writeFSResult(w, "error", err.Error())
+		return
+	}
+	log.Printf("[fs] move id=%s -> dir=%s", entryID, targetDirID)
+	s.invalidateFSCache("")
+	s.writeFSResult(w, "ok", "")
+}
+
+func (s *Server) handleFSCopy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entryID := strings.TrimSpace(r.FormValue("id"))
+	targetDirID := strings.TrimSpace(r.FormValue("target_dir"))
+	if entryID == "" || targetDirID == "" {
+		s.writeFSResult(w, "error", "ID and target_dir are required")
+		return
+	}
+	if err := s.Agent.Copy(targetDirID, entryID); err != nil {
+		s.writeFSResult(w, "error", err.Error())
+		return
+	}
+	log.Printf("[fs] copy id=%s -> dir=%s", entryID, targetDirID)
+	s.invalidateFSCache("")
+	s.writeFSResult(w, "ok", "")
 }
 
 // ---------- settings ----------
@@ -2215,33 +2918,52 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		// Collect all settings from form
-		if v := strings.TrimSpace(r.FormValue("proxy_http")); v != "" {
+		var changes []string
+
+		// Proxy
+		if v := strings.TrimSpace(r.FormValue("proxy_http")); v != s.ProxyHTTP {
 			s.ProxyHTTP = v
-			log.Printf("[settings] proxy set to %s", v)
+			changes = append(changes, fmt.Sprintf("proxy=%s", v))
 		}
-		if v := strings.TrimSpace(r.FormValue("lang")); v != "" {
+		// Language
+		if v := strings.TrimSpace(r.FormValue("lang")); v != "" && v != ws.Lang {
 			ws.Lang = v
+			changes = append(changes, fmt.Sprintf("lang=%s", v))
 		}
-		if v, err := strconv.Atoi(r.FormValue("chunk_delay")); err == nil && v > 0 {
+		// Chunk delay
+		if v, err := strconv.Atoi(r.FormValue("chunk_delay")); err == nil && v > 0 && v != ws.ChunkDelay {
 			ws.ChunkDelay = v
+			changes = append(changes, fmt.Sprintf("chunk_delay=%d", v))
 		}
-		if v, err := strconv.Atoi(r.FormValue("chunk_size")); err == nil && v > 0 {
+		// Chunk size
+		if v, err := strconv.Atoi(r.FormValue("chunk_size")); err == nil && v > 0 && v != ws.ChunkSize {
 			ws.ChunkSize = v
+			changes = append(changes, fmt.Sprintf("chunk_size=%d", v))
 		}
-		if v, err := strconv.Atoi(r.FormValue("cooldown_min")); err == nil && v > 0 {
+		// Cooldown min
+		if v, err := strconv.Atoi(r.FormValue("cooldown_min")); err == nil && v > 0 && v != ws.CooldownMin {
 			ws.CooldownMin = v
+			changes = append(changes, fmt.Sprintf("cooldown_min=%d", v))
 		}
-		if v, err := strconv.Atoi(r.FormValue("cooldown_max")); err == nil && v > 0 {
+		// Cooldown max
+		if v, err := strconv.Atoi(r.FormValue("cooldown_max")); err == nil && v > 0 && v != ws.CooldownMax {
 			ws.CooldownMax = v
+			changes = append(changes, fmt.Sprintf("cooldown_max=%d", v))
 		}
-		if v, err := strconv.Atoi(r.FormValue("subs_interval")); err == nil && v >= 0 {
+		// Subscription interval
+		if v, err := strconv.Atoi(r.FormValue("subs_interval")); err == nil && v >= 0 && v != ws.SubsInterval {
 			ws.SubsInterval = v
+			changes = append(changes, fmt.Sprintf("subs_interval=%d", v))
 		}
-		ws.DisableCache = r.FormValue("disable_cache") == "on"
-		if pw := sanitizePassword(r.FormValue("web_password")); pw != "" {
+		// Web password
+		if pw := sanitizePassword(r.FormValue("web_password")); pw != "" && pw != ws.WebPassword {
 			webPassword = pw
 			ws.WebPassword = pw
+			changes = append(changes, "web_password=***")
+		}
+
+		if len(changes) > 0 {
+			log.Printf("[settings] updated: %s", strings.Join(changes, ", "))
 		}
 		s.saveWebSettings(ws)
 		s.saveProxyConfig()
@@ -2249,7 +2971,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		// Also save to agent if logged in
 		if s.Agent != nil {
 			st := p115pkg.AppSettings{
-				DisableCache: ws.DisableCache,
 				Lang:         ws.Lang,
 				ChunkDelay:   ws.ChunkDelay,
 				ChunkSize:    ws.ChunkSize,
@@ -2273,13 +2994,24 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if ws.WebPassword != "" {
 			data.Settings.WebPassword = ws.WebPassword
 		}
+		data.Settings.SubsInterval = ws.SubsInterval
+		data.Settings.ChunkSize = ws.ChunkSize
+		data.Settings.ChunkDelay = ws.ChunkDelay
 		http.SetCookie(w, &http.Cookie{Name: "r2c_lang", Value: lang, Path: "/", MaxAge: 86400 * 365})
 		dashboardTemplate.Execute(w, data)
 		return
 	}
 
 	// GET: load saved settings
-	data := s.pageData("", "")
+	lang := ws.Lang
+	if lang == "" {
+		lang = "zh"
+	}
+	errMsg := ""
+	if r.URL.Query().Get("err") == "not_logged_in" {
+		errMsg = tr(lang, "err_not_logged_in")
+	}
+	data := s.pageData("", errMsg)
 	data.Page = "settings"
 	data.ProxyHTTP = s.ProxyHTTP
 	if s.Agent != nil {
@@ -2301,9 +3033,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if ws.CooldownMax > 0 {
 		data.Settings.CooldownMaxMs = ws.CooldownMax
 	}
-	if ws.DisableCache {
-		data.Settings.DisableCache = ws.DisableCache
-	}
+	data.Settings.SubsInterval = ws.SubsInterval
 	if ws.SubsInterval > 0 {
 		data.Settings.SubsInterval = ws.SubsInterval
 	}
@@ -2311,7 +3041,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data.Settings.WebPassword = ws.WebPassword
 	}
 
-	lang := ws.Lang
 	if lang == "" {
 		lang = "zh"
 	}
@@ -2326,11 +3055,10 @@ func (s *Server) handleDedup(w http.ResponseWriter, r *http.Request) {
 	data.Page = "dedup"
 
 	var entries []dedupEntry
-	feeds := s.readRssFeeds()
-	for _, feedEntries := range feeds {
-		for _, e := range feedEntries {
-			cnt := globalDedup.SubCount(e.Name)
-			entries = append(entries, dedupEntry{SubKey: e.Name, Count: cnt})
+	for _, subKey := range globalDedup.SubKeys() {
+		cnt := globalDedup.SubCount(subKey)
+		if cnt > 0 {
+			entries = append(entries, dedupEntry{SubKey: subKey, Count: cnt})
 		}
 	}
 	data.DedupEntries = entries
@@ -2344,30 +3072,58 @@ func (s *Server) handleDedupClear(w http.ResponseWriter, r *http.Request) {
 	}
 	subKey := r.FormValue("sub")
 	if subKey == "" {
-		s.renderResult(w, "", "缺少订阅名")
+		s.renderMsg(w, "", "err_missing_sub_name")
 		return
 	}
-	globalDedup.RemoveSub(subKey)
-	globalDedup.Save()
+	globalDedup.ClearSub(subKey)
 	log.Printf("[dedup] cleared dedup for %s", subKey)
-	http.Redirect(w, r, "/dedup", http.StatusSeeOther)
+	http.Redirect(w, r, "/subs", http.StatusSeeOther)
 }
 
 func (s *Server) handleDedupHashes(w http.ResponseWriter, r *http.Request) {
 	subKey := r.URL.Query().Get("sub")
 	hashes := globalDedup.Hashes(subKey)
-	// Build response with hash + torrent URL
+	// Build response with hash + name + torrent URL
 	type hashEntry struct {
 		Hash string `json:"hash"`
+		Name string `json:"name,omitempty"`
 		URL  string `json:"url,omitempty"`
 	}
 	out := make([]hashEntry, 0, len(hashes))
 	for _, h := range hashes {
-		out = append(out, hashEntry{Hash: h, URL: globalDedup.TorrentURLByHash(h)})
+		name := globalDedup.GetHashName(h)
+		if name == "" {
+			// Fallback: try to extract from URL
+			if u := globalDedup.TorrentURLByHash(h); u != "" {
+				name = extractNameFromURL(u)
+			}
+		}
+		out = append(out, hashEntry{Hash: h, Name: name, URL: globalDedup.TorrentURLByHash(h)})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	data, _ := json.Marshal(out)
 	w.Write(data)
+}
+
+func (s *Server) handleDedupRemoveHash(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	subKey := r.FormValue("sub")
+	hash := r.FormValue("hash")
+	if subKey == "" || hash == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"error","message":"missing sub or hash"}`))
+		return
+	}
+	if globalDedup.RemoveHash(subKey, hash) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"error","message":"not found"}`))
+	}
 }
 
 // ---------- torrent cache (merged into dedup) ----------
@@ -2394,16 +3150,123 @@ func (s *Server) handleTorrentClear(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dedup", http.StatusSeeOther)
 }
 
-func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	data := s.pageData("", "")
-	data.Page = "tasks"
-	dashboardTemplate.Execute(w, data)
-}
-
 func (s *Server) handleLogPage(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")
 	data.Page = "log"
 	dashboardTemplate.Execute(w, data)
+}
+
+func extractNameFromURL(rawURL string) string {
+	if strings.Contains(rawURL, "dn=") {
+		for _, part := range strings.Split(rawURL, "&") {
+			if strings.HasPrefix(strings.ToLower(part), "dn=") {
+				n, _ := url.QueryUnescape(part[3:])
+				return n
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
+	data := s.pageData("", "")
+	data.Page = "about"
+	dashboardTemplate.Execute(w, data)
+}
+
+func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	type apiTask struct {
+		InfoHash string  `json:"info_hash"`
+		Name     string  `json:"name"`
+		Size     string  `json:"size"`
+		Status   string  `json:"status"`
+		Percent  float64 `json:"percent"`
+		URL      string  `json:"url"`
+		RowClass string  `json:"row_class"`
+	}
+	resp := struct {
+		Count int       `json:"count"`
+		Tasks []apiTask `json:"tasks"`
+	}{}
+	if s.Agent != nil {
+		tasks, err := s.Agent.ListTasks()
+		if err == nil {
+			resp.Count = len(tasks)
+			for _, t := range tasks {
+				row := apiTask{
+					InfoHash: t.InfoHash,
+					Name:     displayName(t),
+					Size:     formatSize(t.Size),
+					Percent:  t.Percent,
+					URL:      t.URL,
+				}
+				switch {
+				case t.Status == 2:
+					row.Status = "done"
+					row.RowClass = "row-done"
+				case t.Status == -1:
+					row.Status = "failed"
+					row.RowClass = "row-failed"
+				case t.Status == 1:
+					row.Status = "downloading"
+					row.RowClass = "row-running"
+				default:
+					row.Status = "waiting"
+				}
+				resp.Tasks = append(resp.Tasks, row)
+			}
+		}
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	since := r.URL.Query().Get("since")
+	var lines []string
+	if since == "" {
+		lines = logBuf.Lines()
+	} else {
+		// Return only lines after the given marker
+		allLines := logBuf.Lines()
+		found := false
+		for _, l := range allLines {
+			if found {
+				lines = append(lines, l)
+			} else if strings.Contains(l, since) {
+				found = true
+			}
+		}
+		if !found {
+			lines = allLines
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"lines": lines,
+	})
+}
+
+func (s *Server) handleAPILang(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	lang := strings.TrimSpace(r.FormValue("lang"))
+	if lang != "zh" && lang != "en" {
+		lang = "zh"
+	}
+	ws := s.loadWebSettings()
+	ws.Lang = lang
+	s.saveWebSettings(ws)
+	// Also update agent settings
+	if s.Agent != nil {
+		st := s.Agent.GetSettings()
+		st.Lang = lang
+		s.Agent.UpdateSettings(st)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{"ok":true}`)
 }
 
 // ---------- login ----------
@@ -2461,31 +3324,31 @@ func (s *Server) handleCookiesLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	cookies := strings.TrimSpace(r.FormValue("cookies"))
 	if cookies == "" {
-		s.renderResult(w, "", "Cookies 不能为空")
+		s.renderMsg(w, "", "err_cookies_empty")
 		return
 	}
 	newAgent, err := p115pkg.ReloginWithCookies(cookies)
 	if err != nil {
 		log.Printf("[auth] cookies login failed: %v", err)
-		s.renderResult(w, "", "登录失败: "+err.Error())
+		s.renderResult(w, "", tr(s.langFromAgent(), "err_login_failed")+err.Error())
 		return
 	}
 	s.SetAgent(newAgent)
 	log.Printf("[auth] cookies updated successfully")
-	s.renderResult(w, "Cookies 已更新并验证成功", "")
+	s.renderMsg(w, "cookies_updated", "")
 }
 
 func (s *Server) handleTest115(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if s.Agent == nil {
-		fmt.Fprint(w, `{"ok":false,"msg":"115 未登录"}`)
+		fmt.Fprint(w, `{"ok":false,"msg":"`+tr(s.langFromAgent(), "err_not_logged_in")+`"}`)
 		return
 	}
 	if err := s.Agent.TestConnection(); err != nil {
 		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
 		return
 	}
-	fmt.Fprint(w, `{"ok":true,"msg":"115 连接正常"}`)
+	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "conn_ok"))
 }
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -2494,7 +3357,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"ok":true,"msg":"正在重启…"}`)
+	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "restarting_json"))
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -2506,34 +3369,22 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		var args []string
 		skipNext := false
 		for i, a := range os.Args {
-			if i == 0 {
-				continue
-			}
-			if skipNext {
-				skipNext = false
-				continue
-			}
-			if a == "--port" || a == "-p" {
-				args = append(args, a)
-				if i+1 < len(os.Args) {
-					args = append(args, os.Args[i+1])
-				}
-				skipNext = true
-				continue
-			}
+			if i == 0 { continue }
+			if skipNext { skipNext = false; continue }
+			if a == "--port" || a == "-p" { args = append(args, a); if i+1 < len(os.Args) { args = append(args, os.Args[i+1]) }; skipNext = true; continue }
 			args = append(args, a)
 		}
 		cmd := exec.Command(exe, args...)
 		cmd.Dir = filepath.Dir(exe)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			CreationFlags: 0x00000008, // DETACHED_PROCESS
-		}
+		// Detach from parent so it survives after we exit
+		prepareRestartCmd(cmd)
+		cmd.Stdin = nil
+		cmd.Stdout = nil
+		cmd.Stderr = nil
 		if err := cmd.Start(); err != nil {
 			log.Printf("[restart] failed to spawn: %v", err)
 			os.Exit(1)
 		}
-		// Release the child so it is not tied to this process
-		cmd.Process.Release()
 		log.Printf("[restart] new process started (pid %d), exiting", cmd.Process.Pid)
 		os.Exit(0)
 	}()
@@ -2543,6 +3394,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")
+	data.Page = "search"
 
 	// Populate indexer list for filter checkboxes
 	if s.IdxMgr != nil {
@@ -2562,12 +3414,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		q := strings.TrimSpace(r.FormValue("q"))
 		if q == "" {
-			data.Error = "请输入搜索关键词"
+			data.Error = tr(s.langFromAgent(), "enter_search_kw")
 			dashboardTemplate.Execute(w, data)
 			return
 		}
 		if s.IdxMgr == nil {
-			data.Error = "索引器未初始化"
+			data.Error = tr(s.langFromAgent(), "indexer_not_initialized")
 			dashboardTemplate.Execute(w, data)
 			return
 		}
@@ -2650,7 +3502,7 @@ func (s *Server) handleSearchSubscribe(w http.ResponseWriter, r *http.Request) {
 		rssURL = buildRssURL(s.Port, q, nil, cat)
 	}
 	if rssURL == "" {
-		data := s.pageData("", "请填写 RSS 地址")
+		data := s.pageData("", tr(s.langFromAgent(), "please_fill_rss"))
 		data.SearchQuery = q
 		dashboardTemplate.Execute(w, data)
 		return
@@ -2658,7 +3510,7 @@ func (s *Server) handleSearchSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	// Save to rss.json
 	if err := addRSSFeed(rssURL, name, filter, cid, savepath); err != nil {
-		data := s.pageData("", "保存失败: "+err.Error())
+		data := s.pageData("", tr(s.langFromAgent(), "saving_failed")+err.Error())
 		data.SearchQuery = q
 		dashboardTemplate.Execute(w, data)
 		return
@@ -2791,7 +3643,7 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 			} else {
 				if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
 					w.Header().Set("Content-Type", "application/json")
-					fmt.Fprint(w, `{"ok":true,"msg":"登录成功"}`)
+					fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "login_success"))
 					return
 				}
 			}
@@ -2828,6 +3680,7 @@ func (s *Server) handleIndexerTest(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
 		return
 	}
+	log.Printf("[indexer] test %s: ok", id)
 	fmt.Fprint(w, `{"ok":true,"msg":"ok"}`)
 }
 
@@ -2837,6 +3690,7 @@ func (s *Server) handleIndexerTestAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results := s.IdxMgr.TestAll()
+	log.Printf("[indexer] test-all completed: %d indexers", len(results))
 	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(results)
@@ -2863,14 +3717,76 @@ func (s *Server) handleIndexerLogin(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if id == "" || username == "" || password == "" {
-		fmt.Fprint(w, `{"ok":false,"msg":"需要 id, username, password"}`)
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, tr(s.langFromAgent(), "err_id_username_password"))
 		return
 	}
 	if err := s.IdxMgr.Login(id, username, password); err != nil {
 		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
 		return
 	}
-	fmt.Fprint(w, `{"ok":true,"msg":"登录成功"}`)
+	log.Printf("[indexer] login %s: ok", id)
+	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "login_success"))
+}
+
+func (s *Server) handleIndexerEdit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.IdxMgr == nil {
+		fmt.Fprint(w, `{"ok":false,"msg":"no indexer manager"}`)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"missing id"}`)
+		return
+	}
+	if r.Method == http.MethodGet {
+		// Return raw YAML
+		yaml, err := s.IdxMgr.GetDefinitionYAML(id)
+		if err != nil {
+			fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"ok": "true", "yaml": yaml})
+		return
+	}
+	if r.Method == http.MethodPost {
+		yamlContent := r.FormValue("yaml")
+		if yamlContent == "" {
+			fmt.Fprint(w, `{"ok":false,"msg":"missing yaml content"}`)
+			return
+		}
+		if err := s.IdxMgr.UpdateDefinitionYAML(id, yamlContent); err != nil {
+			fmt.Fprintf(w, `{"ok":false,"msg":"save failed: %s"}`, err.Error())
+			return
+		}
+		log.Printf("[indexer] edit %s: definition updated (%d bytes)", id, len(yamlContent))
+		fmt.Fprint(w, `{"ok":true,"msg":"saved"}`)
+		return
+	}
+	fmt.Fprint(w, `{"ok":false,"msg":"method not allowed"}`)
+}
+
+func (s *Server) handleIndexerDelete(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.IdxMgr == nil {
+		fmt.Fprint(w, `{"ok":false,"msg":"no indexer manager"}`)
+		return
+	}
+	if r.Method != http.MethodPost {
+		fmt.Fprint(w, `{"ok":false,"msg":"POST required"}`)
+		return
+	}
+	id := r.FormValue("id")
+	if id == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"missing id"}`)
+		return
+	}
+	if err := s.IdxMgr.DeleteDefinition(id); err != nil {
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+	log.Printf("[indexer] delete %s: definition removed", id)
+	fmt.Fprint(w, `{"ok":true,"msg":"deleted"}`)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -2907,10 +3823,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		errMsg := `<div class="err">密码错误</div>`
-		if lang == "en" {
-			errMsg = `<div class="err">Wrong password</div>`
-		}
+		errMsg := `<div class="err">` + tr(lang, "wrong_password_html") + `</div>`
 		fmt.Fprint(w, loginPage(lang, errMsg))
 		return
 	}
@@ -2945,14 +3858,12 @@ func sanitizePassword(s string) string {
 
 func loginPage(lang, errHTML string) string {
 	title := "🔐 pan-fetcher"
-	pageTitle := "pan-fetcher 登录"
-	ph := "输入管理密码"
-	btn := "登录"
+	pageTitle := tr(lang, "login_page_title")
+	ph := tr(lang, "login_pw_ph")
+	btn := tr(lang, "login_btn")
 	htmlLang := "zh-CN"
 	if lang == "en" {
-		pageTitle = "pan-fetcher Login"
-		ph = "Enter password"
-		btn = "Login"
+		htmlLang = "en"
 		htmlLang = "en"
 	}
 	return `<!doctype html>
@@ -3018,13 +3929,14 @@ type subRow struct {
 }
 
 type rssSubRow struct {
-	Site     string
-	Name     string
-	URL      string
-	Filter   string
-	Cid      string
-	SavePath string
-	Enabled  bool
+	Site       string
+	Name       string
+	URL        string
+	Filter     string
+	Cid        string
+	SavePath   string
+	Enabled    bool
+	CacheCount int
 }
 
 func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -3050,11 +3962,13 @@ func (s *Server) handleSubsAction(w http.ResponseWriter, r *http.Request) {
 
 	if action == "toggle" {
 		s.toggleRssSub(site, name)
+		log.Printf("[subs] toggle %q on %s", name, site)
 		http.Redirect(w, r, "/subs", http.StatusSeeOther)
 		return
 	}
 	if action == "delete" {
 		s.deleteRssSub(site, name)
+		log.Printf("[subs] delete %q from %s", name, site)
 		http.Redirect(w, r, "/subs", http.StatusSeeOther)
 		return
 	}
@@ -3063,6 +3977,7 @@ func (s *Server) handleSubsAction(w http.ResponseWriter, r *http.Request) {
 		savepath := strings.TrimSpace(r.FormValue("savepath"))
 		filter := strings.TrimSpace(r.FormValue("filter"))
 		s.updateRssSub(site, name, cid, savepath, filter)
+		log.Printf("[subs] edit %q on %s (cid=%s, savepath=%q)", name, site, cid, savepath)
 		http.Redirect(w, r, "/subs", http.StatusSeeOther)
 		return
 	}
@@ -3078,6 +3993,7 @@ func (s *Server) loadRssSubs() []rssSubRow {
 				Site: site, Name: e.Name, URL: e.URL,
 				Filter: e.Filter, Cid: e.Cid, SavePath: e.SavePath,
 				Enabled: e.Enabled,
+				CacheCount: globalDedup.SubCount(e.Name),
 			})
 		}
 	}
@@ -3125,8 +4041,7 @@ func (s *Server) deleteRssSub(site, name string) {
 	}
 	s.writeRssFeeds(feeds)
 	// Also clean up dedup cache for this subscription
-	globalDedup.RemoveSub(name)
-	globalDedup.Save()
+	globalDedup.ClearSub(name)
 }
 
 func (s *Server) updateRssSub(site, name, cid, savepath, filter string) {
@@ -3151,7 +4066,7 @@ func (s *Server) updateRssSub(site, name, cid, savepath, filter string) {
 
 func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	if s.Agent == nil {
-		s.renderResult(w, "", "115 未登录，无法运行订阅")
+		s.renderMsg(w, "", "err_not_logged_in_subs")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -3160,7 +4075,7 @@ func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	}
 	rssURL := strings.TrimSpace(r.FormValue("rss_url"))
 	if rssURL == "" {
-		s.renderResult(w, "", "RSS地址不能为空")
+		s.renderMsg(w, "", "err_rss_empty")
 		return
 	}
 	cid := strings.TrimSpace(r.FormValue("cid"))
@@ -3170,14 +4085,25 @@ func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(rssURL, "/") {
 		rssURL = fmt.Sprintf("http://127.0.0.1:%d%s", s.Port, rssURL)
 	}
-	go s.Agent.QuickGrabRSS(rssURL, cid, savepath, filter, "manual")
-	s.renderResult(w, fmt.Sprintf("已开始处理 %s", rssURL), "")
+	subKey := strings.TrimSpace(r.FormValue("sub_name"))
+	if subKey == "" {
+		subKey = rssURL
+	}
+	go s.Agent.ProcessRSSFeed(rssURL, cid, savepath, filter, subKey)
+	log.Printf("[subs] run triggered: %s", subKey)
+	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		w.Header().Set("Content-Type", "application/json")
+		lang := s.langFromAgent()
+		fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, trf(lang, "subs_processing_fmt", rssURL))
+		return
+	}
+	http.Redirect(w, r, "/subs", http.StatusSeeOther)
 }
 
 func (s *Server) handleSubsDirs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if s.Agent == nil {
-		fmt.Fprint(w, `{"ok":false,"msg":"115 未登录"}`)
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, tr(s.langFromAgent(), "not_logged_in_json"))
 		return
 	}
 	parentID := r.URL.Query().Get("pid")
@@ -3192,7 +4118,7 @@ func (s *Server) handleSubsDirs(w http.ResponseWriter, r *http.Request) {
 	// Get actual parent of this directory for ".." navigation
 	actualParent := "0"
 	if parentID != "0" {
-		if e, err := s.Agent.GetEntry(parentID); err == nil {
+		if e, err := s.getEntryCached(parentID); err == nil {
 			actualParent = e.ParentID
 		}
 	}
@@ -3221,8 +4147,33 @@ func (s *Server) renderResult(w http.ResponseWriter, message, errMsg string) {
 	}
 }
 
+// langFromAgent returns the user's language preference, defaults to "zh".
+func (s *Server) langFromAgent() string {
+	if s.Agent != nil {
+		if st := s.Agent.GetSettings(); st.Lang != "" {
+			return st.Lang
+		}
+	}
+	return "zh"
+}
+
+// renderMsg renders a translated message/error through the template.
+func (s *Server) renderMsg(w http.ResponseWriter, msgKey, errKey string) {
+	lang := s.langFromAgent()
+	s.renderResult(w, tr(lang, msgKey), tr(lang, errKey))
+}
+
+// renderMsgf renders a translated formatted message through the template.
+func (s *Server) renderMsgf(w http.ResponseWriter, msgKey string, args ...interface{}) {
+	lang := s.langFromAgent()
+	s.renderResult(w, trf(lang, msgKey, args...), "")
+}
+
 func (s *Server) pageData(message, errMsg string) dashboardData {
-	// Determine language
+	return s.pageDataWithCache("", message, errMsg)
+}
+
+func (s *Server) pageDataWithCache(page, message, errMsg string) dashboardData {
 	lang := "zh"
 	if s.Agent != nil {
 		st := s.Agent.GetSettings()
@@ -3237,37 +4188,50 @@ func (s *Server) pageData(message, errMsg string) dashboardData {
 		T:       langMap(lang),
 	}
 	if s.Agent != nil {
-		// Quick 115 connectivity check
-		if err := s.Agent.TestConnection(); err == nil {
-			data.LoggedIn = true
+		// Cache connection check for 60 seconds
+		if time.Since(s.connCheckTime) < 60*time.Second {
+			data.LoggedIn = s.connCheckLoggedIn
+		} else {
+			if err := s.Agent.TestConnection(); err == nil {
+				data.LoggedIn = true
+				s.connCheckLoggedIn = true
+			} else {
+				s.connCheckLoggedIn = false
+			}
+			s.connCheckTime = time.Now()
 		}
+
 		data.Cookies = s.Agent.LoadCookiesStr()
-		tasks, err := s.Agent.ListTasks()
-		if err == nil {
-			data.TaskCount = len(tasks)
-			data.Tasks = make([]taskRow, 0, len(tasks))
-			for _, t := range tasks {
-				row := taskRow{
-					InfoHash: t.InfoHash,
-					Name:     displayName(t),
-					Size:     formatSize(t.Size),
-					Percent:  t.Percent,
-					URL:      t.URL,
+
+		// Only load tasks for home/tasks page (JS already polls /api/tasks)
+		if page == "" || page == "home" || page == "tasks" {
+			tasks, err := s.Agent.ListTasks()
+			if err == nil {
+				data.TaskCount = len(tasks)
+				data.Tasks = make([]taskRow, 0, len(tasks))
+				for _, t := range tasks {
+					row := taskRow{
+						InfoHash: t.InfoHash,
+						Name:     displayName(t),
+						Size:     formatSize(t.Size),
+						Percent:  t.Percent,
+						URL:      t.URL,
+					}
+					switch {
+					case t.Status == 2:
+						row.Status = "done"
+						row.RowClass = "row-done"
+					case t.Status == -1:
+						row.Status = "failed"
+						row.RowClass = "row-failed"
+					case t.Status == 1:
+						row.Status = "downloading"
+						row.RowClass = "row-running"
+					default:
+						row.Status = "waiting"
+					}
+					data.Tasks = append(data.Tasks, row)
 				}
-				switch {
-				case t.Status == 2:
-					row.Status = "done"
-					row.RowClass = "row-done"
-				case t.Status == -1:
-					row.Status = "failed"
-					row.RowClass = "row-failed"
-				case t.Status == 1:
-					row.Status = "downloading"
-					row.RowClass = "row-running"
-				default:
-					row.Status = "waiting"
-				}
-				data.Tasks = append(data.Tasks, row)
 			}
 		}
 	}

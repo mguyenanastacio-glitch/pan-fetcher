@@ -1,0 +1,29 @@
+{
+  "mikanani.me": [
+    {
+      "name": "示例订阅",
+      "filter": "/1080p/",
+      "url": "https://mikanani.me/RSS/Bangumi?bangumiId=xxxx&subgroupid=xx",
+      "cid": "你的115目录ID",
+      "savepath": "番剧名",
+      "enabled": true
+    }
+  ],
+  "nyaa.si": [
+    {
+      "name": "示例订阅",
+      "cid": "你的115目录ID",
+      "savepath": "番剧名",
+      "url": "https://nyaa.si/?page=rss&u=用户名"
+    }
+  ],
+  "share.dmhy.org": [
+    {
+      "name": "示例订阅",
+      "filter": "简日双语",
+      "cid": "你的115目录ID",
+      "savepath": "番剧名",
+      "url": "https://share.dmhy.org/topics/rss/rss.xml?keyword=关键词"
+    }
+  ]
+}

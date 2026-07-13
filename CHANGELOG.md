@@ -1,23 +1,34 @@
-﻿# v0.2.3
+﻿# Changelog
 
-## 变动
+## v0.3.0 (2026-07)
 
-- 新增统一 `config.toml` 配置方案，支持认证、服务端口、数据库、115 参数、代理、RSS 订阅和站点配置。
-- 支持从当前工作目录和 `~/.config/pan-fetcher` 读取配置文件，保留 `rss.json`、`node-site-config.json`、`.cookies` 的兼容读取。
-- 新增 `[database].path` 配置，支持通过 TOML 指定 SQLite 数据库路径，并兼容读取既有 `db.sqlite`。
-- 优化 cookies 读取和二维码登录写回逻辑，优先遵循已加载配置和 `[auth].cookies_file`。
-- 优化 `store.NewWithPath`，创建数据库父目录并向上返回打开数据库和初始化表结构的错误。
-- 重写 `scripts/install-release.sh`，支持 `install`、`update`、`uninstall`、`purge`，默认安装 release 二进制并注册 systemd 服务。
-- Linux systemd 安装默认使用 `/var/lib/pan-fetcher/config.toml`、`/var/lib/pan-fetcher/.cookies` 和 `/var/lib/pan-fetcher/db.sqlite`
+### 新增
+- Web 文件管理：新建/重命名/删除/移动，自定义弹窗交互
+- 订阅管理整合缓存库：内嵌查看资源名、清空、折叠展开
+- 侧栏语言切换（CN/EN）、关于页面
+- 全局操作日志：FS/索引器/订阅/设置全覆盖
+- 磁力链接 dn= 参数保留，缓存显示资源名而非 hash
+- 订阅立即执行为 AJAX 免刷新，3 秒后自动刷新
+- 顶栏公告区，状态消息移入 topbar
 
-# v0.2.2
+### 优化
+- pageData 性能：连接检查缓存 60s，FS/设置页跳过任务加载
+- 面包屑条目缓存（getEntryCached）
+- 设置日志仅记录实际变更
 
-## 变动
+### 清理
+- 移除不生效的"跳过去重"（disable_cache）
+- 删除失效索引器（kickasstorrent、skytorrents、dmhy_jackett）
+- 删除空 webdav/ 目录、冗余 rsshub.go、/tasks 路由
 
-- 补充说明 `savepath` 支持路径形式，例如 `文件夹名称/文件夹名称`
-- 将上游适配到 `Nahuimi/elevengo`，并通过 `go.mod` 的 `replace` 规则兼容其当前模块声明
-- 适配新增的离线任务可选参数 `savepath`
-- `rss.json` 配置项新增可选字段 `savepath`
-- `pan-fetcher magnet` 子命令新增 `--savepath` 参数
-- 服务模式 `/add` 接口请求体新增可选字段 `savepath`
-- 更新 README 与示例配置，补充 `savepath` 的使用说明
+## v0.2.3
+
+### 新增
+- 统一 config.toml 配置方案
+- Linux systemd 安装脚本
+
+## v0.2.2
+
+### 修复
+- 适配 elevengo 上游变更
+- 新增 savepath 可选字段

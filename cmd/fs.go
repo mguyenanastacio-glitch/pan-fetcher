@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/cloudfs"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/p115"
+	"github.com/spf13/cobra"
 )
 
 // fs-level shared flags
@@ -63,7 +63,6 @@ func initFsSession(ctx context.Context, cmd *cobra.Command) *cloudfs.Session {
 	}
 
 	p115.SetOption(p115.Option{
-		DisableCache:  cfg.P115.DisableCache,
 		ChunkDelay:    cfg.P115.ChunkDelay,
 		ChunkSize:     cfg.P115.ChunkSize,
 		CooldownMinMs: cfg.P115.CooldownMinMs,

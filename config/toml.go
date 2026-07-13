@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -40,7 +39,6 @@ type TOMLDatabaseConfig struct {
 
 // TOMLP115Config represents 115 cloud storage configuration
 type TOMLP115Config struct {
-	DisableCache  bool `toml:"disable_cache"`
 	ChunkDelay    int  `toml:"chunk_delay"`
 	ChunkSize     int  `toml:"chunk_size"`
 	CooldownMinMs int  `toml:"cooldown_min_ms"`
@@ -193,9 +191,6 @@ func ResolveCookiesFile(cookiesFile string, tomlPath string) string {
 	}
 
 	if tomlPath != "" {
-		if strings.Contains(tomlPath, "/") && !strings.Contains(tomlPath, "\\") {
-			return path.Join(path.Dir(tomlPath), cookiesFile)
-		}
 		return filepath.Join(filepath.Dir(tomlPath), cookiesFile)
 	}
 

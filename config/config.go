@@ -24,7 +24,6 @@ type SiteConfig struct {
 
 // P115Option represents 115 cloud storage options (local copy to avoid circular dependency)
 type P115Option struct {
-	DisableCache  bool
 	ChunkDelay    int
 	ChunkSize     int
 	CooldownMinMs int
@@ -59,7 +58,6 @@ type DatabaseConfig struct {
 
 // P115Config represents 115 cloud storage configuration
 type P115Config struct {
-	DisableCache  bool
 	ChunkDelay    int
 	ChunkSize     int
 	CooldownMinMs int
@@ -83,8 +81,6 @@ type CLIParams struct {
 	RSSPath          string
 	Port             int
 	PortSet          bool
-	DisableCache     bool
-	DisableCacheSet  bool
 	ChunkDelay       int
 	ChunkDelaySet    bool
 	ChunkSize        int
@@ -117,7 +113,6 @@ func LoadAllOptions() LoadOptions {
 // ToP115Option converts P115Config to P115Option
 func (c *P115Config) ToP115Option() P115Option {
 	return P115Option{
-		DisableCache:  c.DisableCache,
 		ChunkDelay:    c.ChunkDelay,
 		ChunkSize:     c.ChunkSize,
 		CooldownMinMs: c.CooldownMinMs,
@@ -168,9 +163,6 @@ func Resolve(cli CLIParams, toml *TOMLConfig, tomlPath string, legacy *LegacyCon
 	}
 
 	// P115 priority: CLI params > TOML > defaults
-	// DisableCache: CLI or TOML (boolean OR logic)
-	cfg.P115.DisableCache = (cli.DisableCacheSet && cli.DisableCache) || (!cli.DisableCacheSet && cli.DisableCache) || (toml != nil && toml.P115.DisableCache)
-
 	// ChunkDelay: CLI > TOML > default 2
 	if cli.ChunkDelaySet || cli.ChunkDelay != 0 {
 		cfg.P115.ChunkDelay = cli.ChunkDelay
@@ -226,11 +218,9 @@ func Resolve(cli CLIParams, toml *TOMLConfig, tomlPath string, legacy *LegacyCon
 		cfg.Sites = legacy.Sites
 	}
 
-	// Proxy priority: TOML [proxy].http > default "http://127.0.0.1:10809"
+	// Proxy: TOML [proxy].http
 	if toml != nil && toml.Proxy.HTTP != "" {
 		cfg.Proxy.HTTP = toml.Proxy.HTTP
-	} else {
-		cfg.Proxy.HTTP = "http://127.0.0.1:10809" // Default
 	}
 
 	return cfg

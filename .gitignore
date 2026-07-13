@@ -1,9 +1,40 @@
-/target
-/.idea
-/.vscode
-!/.vscode/
-/.vscode/*
-!/.vscode/settings.json
-t.txt
+# === 编译产物 ===
+*.exe
+*.exe~
+*.test
+*.out
+/vendor/
+
+# === 用户数据 & 运行时文件 ===
 db.sqlite
+db.sqlite-journal
+db.sqlite-wal
 .cookies
+dedup-cache.json
+web-settings.json
+saved-searches.json
+
+# === 配置文件（保留 .example 示例） ===
+config.toml
+rss.json
+node-site-config.json
+!*.example.*
+
+# === IDE ===
+.idea/
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# === 系统文件 ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === 日志 ===
+*.log
+

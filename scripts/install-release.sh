@@ -1,9 +1,9 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 
 set -Eeuo pipefail
 
 APP_NAME='pan-fetcher'
-REPO='mguyenanastacio/pan-fetcher'
+REPO='mguyenanastacio-glitch/pan-fetcher'
 BIN_PATH='/usr/local/bin/pan-fetcher'
 DATA_DIR='/var/lib/pan-fetcher'
 CONFIG_FILE="${DATA_DIR}/config.toml"
@@ -63,8 +63,11 @@ detect_arch() {
     x86_64 | amd64)
       echo 'amd64'
       ;;
+    aarch64 | arm64)
+      echo 'arm64'
+      ;;
     *)
-      die 'Only linux amd64 release assets are supported by the current release workflow.'
+      die "Unsupported architecture: $(uname -m)"
       ;;
   esac
 }
@@ -117,13 +120,29 @@ EOF
   fi
 }
 
+install_indexers() {
+  local indexers_dir="${DATA_DIR}/indexers"
+  if [ -d "$indexers_dir" ] && [ "$(ls -A "$indexers_dir" 2>/dev/null)" ]; then
+    info "kept existing: ${indexers_dir}"
+    return
+  fi
+  mkdir -p "$indexers_dir"
+  local base="https://raw.githubusercontent.com/${REPO}/master/indexers"
+  local files="mikan.yml nyaasi.yml dmhy.yml acgnx.yml acgrip.yml bangumi-moe.yml eztv.yml"
+  files="$files torrentz2.yml thepiratebay.yml demonoid.yml metaltracker.yml"
+  for f in $files; do
+    curl -fsSL "${base}/${f}" -o "${indexers_dir}/${f}" || true
+  done
+  info "installed: ${indexers_dir}"
+}
+
 download_binary() {
   local version arch url tmp_file
 
   version="$1"
   arch="$2"
   tmp_file="$3"
-  url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version}-linux-${arch}-musl.tar.gz"
+  url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version}-linux-${arch}.tar.gz"
 
   info "downloading: ${url}"
   curl -fL --retry 3 --retry-delay 3 -o "$tmp_file" "$url"
@@ -153,7 +172,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${DATA_DIR}
 ExecStart=${BIN_PATH} server
-Restart=on-failure
+Restart=always
 RestartSec=10s
 StartLimitIntervalSec=300
 StartLimitBurst=2
@@ -207,11 +226,12 @@ install_release() {
   version="$(latest_version)"
   tmp_dir="$(mktemp -d)"
   tmp_file="${tmp_dir}/${APP_NAME}.tar.gz"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  trap 'rm -rf "${tmp_dir:-}"' EXIT
 
   download_binary "$version" "$arch" "$tmp_file"
   install_config_dir
   install_default_config
+  install_indexers
   install_binary "$tmp_file" "$tmp_dir"
   install_systemd_service
   print_install_next_steps

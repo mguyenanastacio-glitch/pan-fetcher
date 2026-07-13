@@ -7,8 +7,8 @@ import (
 
 	"github.com/dlclark/regexp2"
 
-	"github.com/mmcdole/gofeed"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/request"
+	"github.com/mmcdole/gofeed"
 )
 
 type MagnetSite interface {
@@ -42,7 +42,7 @@ func getSite(url string) MagnetSite {
 	case "acg.rip":
 		return &Acgrip{}
 	case "rsshub.app":
-		return &Rsshub{}
+		return &Acgrip{}
 	case "anibt.net":
 		return &Anibt{}
 	default:

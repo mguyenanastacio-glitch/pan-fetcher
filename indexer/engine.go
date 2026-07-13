@@ -66,7 +66,7 @@ func NewEngine(defDir string) (*Engine, error) {
 }
 
 // newBrowserClient creates a shared HTTP client with connection pooling, keep-alive,
-// and proxy support. Proxy priority: HTTPS_PROXY env �?config file �?default http://127.0.0.1:10809.
+// and proxy support. Proxy priority: HTTPS_PROXY env → config file → direct connection.
 func newBrowserClient() *http.Client {
 	// Determine proxy function
 	proxyFunc := proxyFromConfig()
@@ -136,7 +136,7 @@ func (e *Engine) doRequestWithJar(rawURL string, defID string) (*http.Response, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 
@@ -162,7 +162,7 @@ func (e *Engine) doPostWithJar(rawURL string, defID string, formData url.Values)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -233,6 +233,24 @@ func (e *Engine) ListDefinitions() []IndexerInfo {
 // GetDefinition returns a single definition by ID.
 func (e *Engine) GetDefinition(id string) *IndexerDefinition {
 	return e.definitions[id]
+}
+
+// ReloadDefinition reloads a single definition from its YAML file.
+func (e *Engine) ReloadDefinition(id, path string) error {
+	def, err := e.loadDefinition(path)
+	if err != nil {
+		return err
+	}
+	if def.ID != "" {
+		id = def.ID
+	}
+	e.definitions[id] = def
+	return nil
+}
+
+// RemoveDefinition removes a definition from memory.
+func (e *Engine) RemoveDefinition(id string) {
+	delete(e.definitions, id)
 }
 
 // Search performs a search on a single indexer.
@@ -364,7 +382,7 @@ func (e *Engine) searchSingle(def *IndexerDefinition, req SearchRequest) ([]Sear
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	httpReq.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 

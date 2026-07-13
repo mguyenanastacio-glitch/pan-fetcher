@@ -9,6 +9,10 @@ import (
 const appDirName = "pan-fetcher"
 
 func userConfigDir() (string, bool) {
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, appDirName), true
+	}
+	// Fallback for older Go or unusual setups
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", false

@@ -18,7 +18,6 @@ import (
 	"github.com/mguyenanastacio-glitch/pan-fetcher/subscribe"
 )
 
-var disableCache = false
 var defaultChunkSize = 200
 var chunkDelay = 2
 var cooldownMinMs uint
@@ -30,7 +29,6 @@ var jackettURL string
 var jackettAPIKey string
 
 type Option struct {
-	DisableCache  bool
 	ChunkDelay    int
 	ChunkSize     int
 	CooldownMinMs int
@@ -39,7 +37,6 @@ type Option struct {
 }
 
 func SetOption(opt Option) {
-	disableCache = opt.DisableCache
 	chunkDelay = 2
 	if opt.ChunkDelay > 0 {
 		chunkDelay = opt.ChunkDelay
@@ -182,7 +179,7 @@ func (ag *Agent) addCloudTasks(magnetItems []rsssite.MagnetItem, config *rsssite
 			emptyNum += 1
 			continue
 		}
-		if disableCache || !ag.StoreInstance.HasItem(item.Magnet) {
+		if !ag.StoreInstance.HasItem(item.Magnet) {
 			filterdItems = append(filterdItems, item)
 		}
 	}
@@ -214,7 +211,7 @@ func (ag *Agent) addCloudTasks(magnetItems []rsssite.MagnetItem, config *rsssite
 func (ag *Agent) AddRssUrlTask(url string) {
 	config := rsssite.GetRssConfigByURL(url)
 	if config == nil {
-		pwd := os.Getenv("PWD")
+		pwd := func() string { if d, err := os.Getwd(); err == nil { return d }; return "" }()
 		log.Printf("config not found: %s for url: %s\n", pwd, url)
 		return
 	}
@@ -319,7 +316,7 @@ func (ag *Agent) ProcessRssWithSubscriptions(rssURL string) {
 func (ag *Agent) ExecuteAllRssTask() {
 	rssDict := rsssite.ReadRssConfigDict()
 	if rssDict == nil {
-		pwd := os.Getenv("PWD")
+		pwd := func() string { if d, err := os.Getwd(); err == nil { return d }; return "" }()
 		log.Printf("rss config not found: %s\n", pwd)
 		return
 	}
@@ -337,7 +334,7 @@ func (ag *Agent) ExecuteAllRssTask() {
 	}
 }
 
-func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) {
+func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) error {
 	type bucket struct {
 		urls []string
 		kind string
@@ -355,12 +352,10 @@ func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) {
 		}
 		switch rsssite.ClassifyURL(raw) {
 		case rsssite.TaskURLTorrent:
-			// Download torrent, compute infohash, build magnet
 			if normalized := rsssite.NormalizeTaskURL(raw, ""); normalized != raw {
 				magnets.urls = append(magnets.urls, normalized)
 				log.Printf("[task] torrent converted: %s\n", raw)
 			} else {
-				// Conversion failed, submit torrent URL directly
 				httpURLs.urls = append(httpURLs.urls, raw)
 				log.Printf("[task] torrent fallback to direct: %s\n", raw)
 			}
@@ -377,6 +372,7 @@ func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) {
 	}
 
 	// Submit each bucket
+	submitted := 0
 	for _, b := range []*bucket{magnets, ed2ks, httpURLs} {
 		if len(b.urls) == 0 {
 			continue
@@ -385,8 +381,9 @@ func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) {
 			_, err := ag.Agent.OfflineAddUrl(urls, &option.OfflineAddOptions{SaveDirId: cid, SavePath: savepath})
 			if err != nil {
 				log.Printf("[%s] add offline error: %s\n", b.kind, err)
-				return
+				return fmt.Errorf("add %s failed: %v", b.kind, err)
 			}
+			submitted += len(urls)
 			log.Printf("[%s] add %d tasks\n", b.kind, len(urls))
 			if i != len(b.urls)/defaultChunkSize {
 				time.Sleep(time.Second * time.Duration(chunkDelay))
@@ -394,9 +391,13 @@ func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) {
 		}
 	}
 
+	if submitted == 0 {
+		return errors.New("no valid tasks to submit")
+	}
 	if skipped > 0 {
 		log.Printf("[task] skipped %d unrecognized URLs\n", skipped)
 	}
+	return nil
 }
 func (ag *Agent) OfflineClear(num int) (err error) {
 	flag := elevengo.OfflineClearFlag(num)
@@ -513,6 +514,50 @@ func (ag *Agent) GetEntry(entryID string) (DirEntry, error) {
 	}, nil
 }
 
+// Mkdir creates a new directory and returns its entry.
+func (ag *Agent) Mkdir(parentID, name string) (DirEntry, error) {
+	if ag == nil || ag.Agent == nil {
+		return DirEntry{}, errors.New("agent is nil")
+	}
+	dirID, err := ag.Agent.DirMake(parentID, name)
+	if err != nil {
+		return DirEntry{}, err
+	}
+	return ag.GetEntry(dirID)
+}
+
+// RenameEntry renames a file or directory.
+func (ag *Agent) RenameEntry(entryID, newName string) error {
+	if ag == nil || ag.Agent == nil {
+		return errors.New("agent is nil")
+	}
+	return ag.Agent.FileRename(entryID, newName)
+}
+
+// DeleteEntry deletes a file or directory.
+func (ag *Agent) DeleteEntry(entryID string) error {
+	if ag == nil || ag.Agent == nil {
+		return errors.New("agent is nil")
+	}
+	return ag.Agent.FileDelete([]string{entryID})
+}
+
+// MoveEntry moves a file or directory to a target directory.
+func (ag *Agent) MoveEntry(targetDirID, entryID string) error {
+	if ag == nil || ag.Agent == nil {
+		return errors.New("agent is nil")
+	}
+	return ag.Agent.FileMove(targetDirID, []string{entryID})
+}
+
+// Copy copies an entry to a target directory.
+func (ag *Agent) Copy(targetDirID, entryID string) error {
+	if ag == nil || ag.Agent == nil {
+		return errors.New("agent is nil")
+	}
+	return ag.Agent.FileCopy(targetDirID, []string{entryID})
+}
+
 // SubInfo is a subscription for web display.
 type SubInfo struct {
 	ID        int
@@ -524,15 +569,17 @@ type SubInfo struct {
 	Enabled   bool
 }
 
-// QuickGrabRSS fetches an RSS feed, filters by keyword, and submits all matches.
+// ProcessRSSFeed fetches an RSS feed, filters by keyword, and submits all matches.
 // Phase 1: lightweight info-hash extraction + dedup check (no torrent download).
 // Phase 2: resolve full magnet only for items that pass dedup.
-func (ag *Agent) QuickGrabRSS(rssURL, cid, savepath, keyword, subKey string) {
+func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) {
 	feed := rsssite.GetFeed(rssURL)
 	if feed == nil {
-		log.Printf("[quick] failed to fetch RSS: %s", rssURL)
+		log.Printf("[feed] failed to fetch RSS: %s", rssURL)
 		return
 	}
+
+	log.Printf("[feed] processing subKey=%q, items=%d", subKey, len(feed.Items))
 
 	type candidate struct {
 		magnet string
@@ -578,16 +625,16 @@ func (ag *Agent) QuickGrabRSS(rssURL, cid, savepath, keyword, subKey string) {
 	}
 
 	if skippedPhase1 > 0 {
-		log.Printf("[quick] phase-1 dedup skipped %d (no download needed)", skippedPhase1)
+		log.Printf("[feed] phase-1 dedup skipped %d (no download needed)", skippedPhase1)
 	}
 	if skippedPhase2 > 0 {
-		log.Printf("[quick] phase-2 dedup skipped %d (torrent was downloaded but already cached)", skippedPhase2)
+		log.Printf("[feed] phase-2 dedup skipped %d (torrent was downloaded but already cached)", skippedPhase2)
 	}
 	if len(candidates) == 0 {
-		log.Printf("[quick] all items already cached for keyword=%q in %s", keyword, rssURL)
+		log.Printf("[feed] all items already cached for keyword=%q in %s", keyword, rssURL)
 		return
 	}
-	log.Printf("[quick] found %d NEW items, submitting to cid=%s", len(candidates), cid)
+	log.Printf("[feed] found %d NEW items, submitting to cid=%s", len(candidates), cid)
 
 	var magnets []string
 	for _, c := range candidates {
@@ -596,10 +643,10 @@ func (ag *Agent) QuickGrabRSS(rssURL, cid, savepath, keyword, subKey string) {
 	for i, urls := range chunkBy(magnets, defaultChunkSize) {
 		_, err := ag.Agent.OfflineAddUrl(urls, &option.OfflineAddOptions{SaveDirId: cid, SavePath: savepath})
 		if err != nil {
-			log.Printf("[quick] error: %v", err)
+			log.Printf("[feed] error: %v", err)
 			return
 		}
-		log.Printf("[quick] chunk %d: submitted %d tasks", i+1, len(urls))
+		log.Printf("[feed] chunk %d: submitted %d tasks", i+1, len(urls))
 		if ag.Dedup != nil {
 			for _, u := range urls {
 				ag.Dedup.Add(subKey, u)
@@ -614,7 +661,6 @@ func (ag *Agent) QuickGrabRSS(rssURL, cid, savepath, keyword, subKey string) {
 
 // AppSettings holds runtime-configurable application settings.
 type AppSettings struct {
-	DisableCache  bool
 	ChunkDelay    int
 	ChunkSize     int
 	CooldownMinMs int
@@ -629,7 +675,6 @@ type AppSettings struct {
 
 func (ag *Agent) GetSettings() AppSettings {
 	return AppSettings{
-		DisableCache:  disableCache,
 		ChunkDelay:    chunkDelay,
 		ChunkSize:     defaultChunkSize,
 		CooldownMinMs: int(cooldownMinMs),
@@ -654,7 +699,6 @@ func (ag *Agent) UpdateSettings(s AppSettings) error {
 	if s.CooldownMaxMs > 0 {
 		cooldownMaxMs = uint(s.CooldownMaxMs)
 	}
-	disableCache = s.DisableCache
 	if s.Lang != "" {
 		webLang = s.Lang
 	}

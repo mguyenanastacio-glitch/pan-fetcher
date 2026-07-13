@@ -6,12 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/indexer"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/p115"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/rsssite"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/server"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -20,7 +20,6 @@ var (
 	cookies       string
 	rssJsonPath   string
 	qrLogin       bool
-	disableCache  bool
 	chunkDelay    int
 	chunkSize     int
 	cooldownMinMs int
@@ -71,7 +70,9 @@ var (
 			if len(magnets) == 0 {
 				log.Fatalln("magnets is empty")
 			}
-			pAgent.AddMagnetTask(magnets, cid, savepath)
+			if err := pAgent.AddMagnetTask(magnets, cid, savepath); err != nil {
+				log.Fatalf("add task failed: %v", err)
+			}
 		},
 	}
 	// server subcommand
@@ -84,14 +85,34 @@ var (
 		Run: func(_cmd *cobra.Command, _args []string) {
 			cfg := initAgent(_cmd)
 			server.SetPassword(webPassword)
+			server.LoadPersistedPassword()
 			srv := server.New(pAgent, cfg.Server.Port)
 			srv.LoadProxyConfig()
 
-			// Initialize indexer manager from YAML definitions
-			idxDir := filepath.Join(filepath.Dir(cfg.Database.Path), "indexers")
+			// Initialize indexer manager from YAML definitions.
+			// Look in: data dir > working dir > executable dir.
+			dbPath := cfg.Database.Path
+			if !filepath.IsAbs(dbPath) {
+				if abs, err := filepath.Abs(dbPath); err == nil {
+					dbPath = abs
+				}
+			}
+			idxDir := filepath.Join(filepath.Dir(dbPath), "indexers")
+			if _, err := os.Stat(idxDir); err != nil {
+				// Try current working directory
+				idxDir = "indexers"
+				if _, err := os.Stat(idxDir); err != nil {
+					// Try executable directory
+					if exe, err := os.Executable(); err == nil {
+						idxDir = filepath.Join(filepath.Dir(exe), "indexers")
+					}
+				}
+			}
 			if mgr, err := indexer.NewManager(idxDir); err == nil {
 				srv.SetIndexerManager(mgr)
 				log.Printf("[indexer] loaded %d definitions, 0 active (from %s)", mgr.LibraryCount(), idxDir)
+			} else {
+				log.Printf("[indexer] failed to load indexers: %v", err)
 			}
 
 			srv.StartServer()
@@ -115,7 +136,6 @@ func init() {
 	magnetCmd.Flags().StringVar(&cid, "cid", "", "cid")
 	magnetCmd.Flags().StringVar(&savepath, "savepath", "", "save path")
 	magnetCmd.Flags().StringVar(&textFile, "text", "", "text file")
-	rootCmd.PersistentFlags().BoolVar(&disableCache, "no-cache", false, "skip checking cache in db.sqlite")
 	rootCmd.PersistentFlags().IntVar(&chunkDelay, "chunk-delay", 0, "chunk delay. default 2")
 	rootCmd.PersistentFlags().IntVar(&chunkSize, "chunk-size", 0, "chunk size. default 200")
 	rootCmd.PersistentFlags().IntVar(&cooldownMinMs, "cooldown-min-ms", 1000, "minimum cooldown between 115 API calls in milliseconds. default 1000")
@@ -133,10 +153,6 @@ func buildCLIParams(cmd *cobra.Command) config.CLIParams {
 		Cookies: cookies,
 	}
 
-	if commandFlagChanged(cmd, "no-cache") {
-		cliParams.DisableCache = disableCache
-		cliParams.DisableCacheSet = true
-	}
 	if commandFlagChanged(cmd, "chunk-delay") {
 		cliParams.ChunkDelay = chunkDelay
 		cliParams.ChunkDelaySet = true
@@ -176,7 +192,6 @@ func initAgent(cmd *cobra.Command) *config.Config {
 	}
 
 	p115.SetOption(p115.Option{
-		DisableCache:  cfg.P115.DisableCache,
 		ChunkDelay:    cfg.P115.ChunkDelay,
 		ChunkSize:     cfg.P115.ChunkSize,
 		CooldownMinMs: cfg.P115.CooldownMinMs,

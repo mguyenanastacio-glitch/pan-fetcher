@@ -67,8 +67,7 @@ func NormalizeTaskURL(taskURL, title string) string {
 		return ""
 	}
 	if strings.HasPrefix(taskURL, "magnet:?") {
-		parts := strings.Split(taskURL, "&dn=")
-		return parts[0]
+		return taskURL // keep full magnet including dn= for display names
 	}
 	if strings.HasSuffix(strings.ToLower(taskURL), ".torrent") {
 		magnet, err := torrentURLToMagnet(taskURL, title)
