@@ -17,9 +17,25 @@ var (
 	webhookURL string
 	tzLoc      *time.Location
 	logEnabled bool
-	lastLog    time.Time
+	logQueue   = make(chan string, 200)
 	client     = &http.Client{Timeout: 10 * time.Second}
 )
+
+func init() {
+	go logSender()
+}
+
+func logSender() {
+	for msg := range logQueue {
+		mu.Lock()
+		url := webhookURL
+		mu.Unlock()
+		if url != "" {
+			doSend(url, msg)
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
 
 // SetWebhook configures the WeChat Work webhook URL.
 func SetWebhook(url string) {
@@ -145,26 +161,26 @@ func SetLogEnabled(enabled bool) {
 	logEnabled = enabled
 }
 
-// Logf sends a formatted log message if log push is enabled.
-// Rate-limited to one message per 5 minutes.
+// Logf enqueues a log line for push notification (1/s interval).
 func Logf(format string, args ...interface{}) {
 	mu.Lock()
 	enabled := logEnabled
-	url := webhookURL
-	since := time.Since(lastLog)
 	mu.Unlock()
-
-	if !enabled || url == "" || since < 5*time.Minute {
+	if !enabled {
 		return
 	}
-
-	mu.Lock()
-	lastLog = time.Now()
-	mu.Unlock()
-
 	msg := fmt.Sprintf(format, args...)
 	content := fmt.Sprintf("## pan-fetcher 运行日志\n> %s\n> **时间**: %s", msg, now().Format("15:04:05"))
-	go doSend(url, content)
+	select {
+	case logQueue <- content:
+	default:
+		// queue full, drop oldest
+		select {
+		case <-logQueue:
+		default:
+		}
+		logQueue <- content
+	}
 }
 // Returns nil on success, error otherwise.
 func Test(webhookURL string) error {

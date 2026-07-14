@@ -646,6 +646,17 @@ func (lb *logBuffer) Lines() []string {
 
 var logBuf = newLogBuffer(500)
 
+// notifyLogWriter sends every log line into the notify queue for push.
+type notifyLogWriter struct{}
+
+func (w *notifyLogWriter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\r\n")
+	if line != "" {
+		notify.Logf("%s", line)
+	}
+	return len(p), nil
+}
+
 // tzLogWriter wraps a writer and converts log timestamps to the configured timezone.
 type tzLogWriter struct {
 	out io.Writer
@@ -667,7 +678,7 @@ func (w *tzLogWriter) Write(p []byte) (int, error) {
 	return w.out.Write([]byte(line))
 }
 
-var tzWriter = &tzLogWriter{out: io.MultiWriter(logBuf, os.Stderr)}
+var tzWriter = &tzLogWriter{out: io.MultiWriter(logBuf, os.Stderr, &notifyLogWriter{})}
 
 var timezones = map[string]string{
 	"":                  "系统默认",
@@ -3136,7 +3147,6 @@ func (s *Server) Start(ctx context.Context) error {
 		scheme = "https"
 	}
 	log.Printf("server started on %s://0.0.0.0:%d\n", scheme, s.Port)
-	notify.Logf("server started on %s://0.0.0.0:%d", scheme, s.Port)
 	if useTLS {
 		return srv.ListenAndServeTLS(s.CertFile, s.KeyFile)
 	}
@@ -3185,7 +3195,6 @@ func (s *Server) autoRunSubscriptions() {
 				}
 
 				log.Printf("[auto-sub] running: %s (%s)", subKey, url)
-				notify.Logf("订阅执行: %s", subKey)
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
