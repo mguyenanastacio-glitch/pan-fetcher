@@ -16,6 +16,8 @@ var (
 	mu         sync.Mutex
 	webhookURL string
 	tzLoc      *time.Location
+	logEnabled bool
+	lastLog    time.Time
 	client     = &http.Client{Timeout: 10 * time.Second}
 )
 
@@ -136,7 +138,34 @@ func ServerStarted(port int) string {
 > **时间**: %s`, port, now().Format("2006-01-02 15:04:05"))
 }
 
-// Test sends a test message to the given webhook synchronously.
+// SetLogEnabled enables or disables log push notifications.
+func SetLogEnabled(enabled bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	logEnabled = enabled
+}
+
+// Logf sends a formatted log message if log push is enabled.
+// Rate-limited to one message per 5 minutes.
+func Logf(format string, args ...interface{}) {
+	mu.Lock()
+	enabled := logEnabled
+	url := webhookURL
+	since := time.Since(lastLog)
+	mu.Unlock()
+
+	if !enabled || url == "" || since < 5*time.Minute {
+		return
+	}
+
+	mu.Lock()
+	lastLog = time.Now()
+	mu.Unlock()
+
+	msg := fmt.Sprintf(format, args...)
+	content := fmt.Sprintf("## pan-fetcher 运行日志\n> %s\n> **时间**: %s", msg, now().Format("15:04:05"))
+	go doSend(url, content)
+}
 // Returns nil on success, error otherwise.
 func Test(webhookURL string) error {
 	msg := weworkMsg{

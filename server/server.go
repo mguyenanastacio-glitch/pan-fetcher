@@ -3058,6 +3058,7 @@ func (s *Server) LoadNotifyConfig() {
 	ws := s.loadWebSettings()
 	SetTimezone(ws.Timezone)
 	notify.SetTimezone(ws.Timezone)
+	notify.SetLogEnabled(ws.NotifyLog)
 }
 
 // LoadJackettConfig reads Jackett settings from web-settings.json.
@@ -3098,6 +3099,7 @@ func (s *Server) Start(ctx context.Context) error {
 		scheme = "https"
 	}
 	log.Printf("server started on %s://0.0.0.0:%d\n", scheme, s.Port)
+	notify.Logf("server started on %s://0.0.0.0:%d", scheme, s.Port)
 	if useTLS {
 		return srv.ListenAndServeTLS(s.CertFile, s.KeyFile)
 	}
@@ -3146,6 +3148,7 @@ func (s *Server) autoRunSubscriptions() {
 				}
 
 				log.Printf("[auto-sub] running: %s (%s)", subKey, url)
+				notify.Logf("订阅执行: %s", subKey)
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -3928,6 +3931,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.saveWebSettings(ws)
 		s.saveProxyConfig()
+
+		// Apply notification log setting
+		notify.SetLogEnabled(ws.NotifyLog)
 
 		// Also save to agent if logged in
 		if s.Agent != nil {
