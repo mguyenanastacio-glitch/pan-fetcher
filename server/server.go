@@ -195,7 +195,7 @@ type dedupEntry struct {
 
 var srv *http.Server
 
-const Version = "v0.4.0"
+const Version = "v0.3.3"
 
 var rssJsonPath = "rss.json"
 
