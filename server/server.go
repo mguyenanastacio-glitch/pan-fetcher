@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,6 +174,7 @@ type dashboardData struct {
 	JackettURL      string
 	JackettAPIKey   string
 	AboutVersion    string
+	AutoUpdate      bool
 }
 
 type dashStats struct {
@@ -531,6 +533,7 @@ type webSettings struct {
 	JackettURL    string `json:"jackett_url"`
 	JackettAPIKey string `json:"jackett_apikey"`
 	PageSize      int    `json:"page_size"`
+	AutoUpdate    bool   `json:"auto_update"`
 }
 
 func (s *Server) loadWebSettings() webSettings {
@@ -1028,6 +1031,17 @@ var translations = map[string]map[string]string{
 		"search_label":         "搜索",
 		"download_settings_label": "下载",
 		"subs_notify_label":    "订阅与通知",
+		"update_check_btn":     "检查更新",
+		"update_do_btn":        "立即更新",
+		"update_auto_label":    "自动检查更新",
+		"update_fetch_failed":  "获取版本信息失败",
+		"update_parse_failed":  "解析版本信息失败",
+		"update_already_latest":"已是最新版本",
+		"update_no_asset":      "未找到匹配的二进制文件",
+		"update_download_failed":"下载更新失败",
+		"update_ok":            "更新完成，服务即将重启",
+		"update_checking":      "正在检查…",
+		"update_new_found":     "发现新版本 %s，当前 %s",
 		"subscribe_search":     "📌 订阅此搜索",
 		"add_rss_sub_title":    "📌 添加 RSS 订阅",
 		"sub_name_label":       "名称",
@@ -1323,6 +1337,17 @@ var translations = map[string]map[string]string{
 		"search_label":         "Search",
 		"download_settings_label": "Download",
 		"subs_notify_label":    "Subs & Notifications",
+		"update_check_btn":     "Check Update",
+		"update_do_btn":        "Update Now",
+		"update_auto_label":    "Auto Check Updates",
+		"update_fetch_failed":  "Failed to fetch version info",
+		"update_parse_failed":  "Failed to parse version info",
+		"update_already_latest":"Already up to date",
+		"update_no_asset":      "No matching binary found",
+		"update_download_failed":"Download failed",
+		"update_ok":            "Updated successfully, restarting…",
+		"update_checking":      "Checking…",
+		"update_new_found":     "New version %s found (current: %s)",
 		"subscribe_search":     "📌 Subscribe This Search",
 		"add_rss_sub_title":    "📌 Add RSS Subscription",
 		"sub_name_label":       "Name",
@@ -2765,6 +2790,35 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
           btn.disabled=false;
         }
+        async function checkUpdate(){
+          var btn=document.getElementById('check-update-btn');
+          var sp=document.getElementById('update-status');
+          btn.disabled=true;sp.textContent='{{index .T "update_checking"}}';sp.style.color='var(--muted)';
+          try{
+            var r=await fetch('/settings/check-update');
+            var j=await r.json();
+            if(j.has_update){
+              sp.innerHTML='{{index .T "update_new_found"}}'.replace('%s','<b>'+j.latest+'</b>').replace('%s','<b>'+j.current+'</b>')+' <button type="button" id="do-update-btn" onclick="doUpdate()" style="margin:0 0 0 8px;padding:4px 10px;font-size:12px;background:var(--accent);">{{index .T "update_do_btn"}}</button>';
+              sp.style.color='var(--accent-2)';
+            }else if(j.latest){
+              sp.textContent='✓ {{index .T "update_already_latest"}} ('+j.latest+')';sp.style.color='var(--accent-2)';
+            }else{
+              sp.textContent='✗ {{index .T "update_fetch_failed"}}';sp.style.color='var(--danger)';
+            }
+          }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
+          btn.disabled=false;
+        }
+        async function doUpdate(){
+          if(!(await confirmAsync('{{index .T "confirm_restart"}}')))return;
+          var sp=document.getElementById('update-status');
+          sp.textContent='{{index .T "update_checking"}}';sp.style.color='var(--muted)';
+          try{
+            var r=await fetch('/settings/update',{method:'POST'});
+            var j=await r.json();
+            if(j.ok){sp.textContent='✓ '+j.msg;sp.style.color='var(--accent-2)';setTimeout(function(){location.reload();},3000);}
+            else{sp.textContent='✗ '+j.msg;sp.style.color='var(--danger)';}
+          }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
+        }
       </script>
       <!-- settings form -->
       <form action="/settings" method="post">
@@ -2786,6 +2840,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
                 {{range $val, $name := .TimezoneOptions}}<option value="{{$val}}"{{if eq $.Timezone $val}} selected{{end}}>{{$name}}</option>{{end}}
               </select>
             </div>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+            <button type="button" id="check-update-btn" onclick="checkUpdate()" style="margin:0;padding:6px 14px;font-size:13px;background:var(--accent-2);">{{index .T "update_check_btn"}}</button>
+            <span id="update-status" style="font-size:12px;color:var(--muted);"></span>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;margin:0 0 0 auto;">
+              <input type="checkbox" name="auto_update" value="1" style="width:auto;margin:0;"{{if .AutoUpdate}} checked{{end}}>{{index .T "update_auto_label"}}
+            </label>
           </div>
         </fieldset>
 
@@ -3157,6 +3218,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/settings/test115", s.authCheck(s.handleTest115))
 	mux.HandleFunc("/settings/test-jackett", s.authCheck(s.handleTestJackett))
 	mux.HandleFunc("/settings/restart", s.authCheck(s.handleRestart))
+	mux.HandleFunc("/settings/check-update", s.authCheck(s.handleCheckUpdate))
+	mux.HandleFunc("/settings/update", s.authCheck(s.handleDoUpdate))
 	mux.HandleFunc("/search", s.authCheck(s.handleSearch))
 	mux.HandleFunc("/search/more", s.authCheck(s.handleSearchMore))
 	mux.HandleFunc("/indexers", s.authCheck(s.handleIndexers))
@@ -3844,6 +3907,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ws.PageSize = v
 			changes = append(changes, fmt.Sprintf("page_size=%d", v))
 		}
+		// Auto update
+		if v := r.FormValue("auto_update") == "1"; v != ws.AutoUpdate {
+			ws.AutoUpdate = v
+			changes = append(changes, fmt.Sprintf("auto_update=%v", v))
+		}
 
 		if len(changes) > 0 {
 			log.Printf("[settings] updated: %s", strings.Join(changes, ", "))
@@ -3892,6 +3960,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if data.PageSize <= 0 {
 			data.PageSize = 50
 		}
+		data.AutoUpdate = ws.AutoUpdate
 		http.SetCookie(w, &http.Cookie{Name: "r2c_lang", Value: lang, Path: "/", MaxAge: 86400 * 365})
 		dashboardTemplate.Execute(w, data)
 		return
@@ -3947,6 +4016,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if data.PageSize <= 0 {
 		data.PageSize = 50
 	}
+	data.AutoUpdate = ws.AutoUpdate
 
 	if lang == "" {
 		lang = "zh"
@@ -4332,6 +4402,160 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[restart] new process started (pid %d), exiting", cmd.Process.Pid)
 		os.Exit(0)
+	}()
+}
+
+// handleCheckUpdate queries GitHub for the latest release.
+func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	type updateInfo struct {
+		Latest    string `json:"latest"`
+		Current   string `json:"current"`
+		HasUpdate bool   `json:"has_update"`
+		URL       string `json:"url,omitempty"`
+	}
+	info := updateInfo{Current: Version}
+
+	resp, err := http.Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
+	if err != nil {
+		json.NewEncoder(w).Encode(info)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		json.NewEncoder(w).Encode(info)
+		return
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		json.NewEncoder(w).Encode(info)
+		return
+	}
+
+	info.Latest = release.TagName
+	info.HasUpdate = release.TagName != "" && release.TagName != Version
+	info.URL = release.HTMLURL
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+// handleDoUpdate downloads the latest binary from GitHub and replaces self.
+func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	lang := s.langFromAgent()
+	w.Header().Set("Content-Type", "application/json")
+
+	// Determine platform
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	// Get latest release info
+	resp, err := http.Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_fetch_failed") + ": " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_parse_failed")})
+		return
+	}
+
+	if release.TagName == Version {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_already_latest")})
+		return
+	}
+
+	// Find matching asset
+	pattern := fmt.Sprintf("%s-%s", goos, goarch)
+	if goos == "darwin" && goarch == "amd64" {
+		pattern = "darwin-amd64"
+	}
+	var downloadURL string
+	for _, a := range release.Assets {
+		if strings.Contains(a.Name, pattern) && !strings.Contains(a.Name, "checksum") {
+			downloadURL = a.URL
+			break
+		}
+	}
+	if downloadURL == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": trf(lang, "update_no_asset", goos+"/"+goarch)})
+		return
+	}
+
+	// Download the binary
+	dlResp, err := http.Get(downloadURL)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_download_failed") + ": " + err.Error()})
+		return
+	}
+	defer dlResp.Body.Close()
+
+	exe, err := os.Executable()
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "executable: " + err.Error()})
+		return
+	}
+
+	// Write to temp file, then rename
+	tmpPath := exe + ".new"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "open temp: " + err.Error()})
+		return
+	}
+	if _, err := io.Copy(f, dlResp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "write: " + err.Error()})
+		return
+	}
+	f.Close()
+
+	// On Windows, rename the current exe to .old first
+	oldPath := exe + ".old"
+	if goos == "windows" {
+		os.Remove(oldPath)
+		if err := os.Rename(exe, oldPath); err != nil {
+			os.Remove(tmpPath)
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "replace: " + err.Error()})
+			return
+		}
+	}
+
+	if err := os.Rename(tmpPath, exe); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "install: " + err.Error()})
+		return
+	}
+
+	// Remove old binary on non-Windows
+	if goos != "windows" {
+		os.Remove(oldPath)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
+
+	// Restart after response
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		s.handleRestart(w, r)
 	}()
 }
 
