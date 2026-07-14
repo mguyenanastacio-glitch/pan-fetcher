@@ -67,12 +67,11 @@ func (m *Manager) loadEnabled(defDir string) {
 }
 
 func (m *Manager) saveEnabled(defDir string) {
-	m.mu.RLock()
+	// Internal helper: caller must hold at least RLock
 	var ids []string
 	for id := range m.enabled {
 		ids = append(ids, id)
 	}
-	m.mu.RUnlock()
 	data, _ := json.Marshal(ids)
 	os.WriteFile(m.enabledFile(defDir), data, 0644)
 }
