@@ -23,6 +23,7 @@ import (
 
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/indexer"
+	"github.com/mguyenanastacio-glitch/pan-fetcher/notify"
 	p115pkg "github.com/mguyenanastacio-glitch/pan-fetcher/p115"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/rsssite"
 
@@ -56,7 +57,11 @@ type Server struct {
 	Agent     Agent
 	Port      int
 	Domain    string // Bind domain, e.g. "example.com" or "0.0.0.0"
+	CertFile  string // TLS certificate
+	KeyFile   string // TLS private key
 	ProxyHTTP string
+	WeworkWH  string // WeChat Work webhook
+	startTime time.Time
 	fsCache   map[string]fsCacheEntry
 	fsCacheMu sync.Mutex
 	IdxMgr    *indexer.Manager
@@ -131,6 +136,7 @@ type dashboardData struct {
 	Settings      p115pkg.AppSettings
 	ProxyHTTP     string
 	Domain        string
+	WeworkWebhook string
 	ShowQR        bool
 	Cookies       string
 	SearchQuery   string
@@ -145,6 +151,21 @@ type dashboardData struct {
 	IndexerList    []indexer.IndexerInfo
 	IndexerLibrary []indexer.IndexerInfo
 	DedupEntries   []dedupEntry
+	DashStats       dashStats
+	HasAgent        bool
+	HasPassword     bool
+	NotifyTask      bool
+	NotifyRSS       bool
+	NotifyStartup   bool
+}
+
+type dashStats struct {
+	TotalTasks     int
+	RssSubsTotal   int
+	RssSubsActive  int
+	ActiveIndexers int
+	CacheEntries   int
+	Uptime         string
 }
 
 type dedupEntry struct {
@@ -468,6 +489,9 @@ type webSettings struct {
 	CooldownMax   int    `json:"cooldown_max"`
 	WebPassword   string `json:"web_password"`
 	SubsInterval  int    `json:"subs_interval"`
+	NotifyTask    bool   `json:"notify_task"`
+	NotifyRSS     bool   `json:"notify_rss"`
+	NotifyStartup bool   `json:"notify_startup"`
 }
 
 func (s *Server) loadWebSettings() webSettings {
@@ -494,10 +518,11 @@ func (s *Server) saveWebSettings(ws webSettings) {
 // ---------- log buffer ----------
 
 type logBuffer struct {
-	mu   sync.Mutex
-	buf  []string
-	size int
-	pos  int
+	mu      sync.Mutex
+	buf     []string
+	size    int
+	pos     int   // total lines written (wraps via modulo)
+	wrapped bool  // true after first wrap-around
 }
 
 func newLogBuffer(size int) *logBuffer {
@@ -513,29 +538,42 @@ func (lb *logBuffer) Write(p []byte) (int, error) {
 	}
 	lb.buf[lb.pos%lb.size] = line
 	lb.pos++
+	if lb.pos >= lb.size && lb.pos%lb.size == 0 {
+		lb.wrapped = true
+	}
 	return len(p), nil
 }
 
+// Lines returns log lines in reverse chronological order (newest first).
+// If the buffer has wrapped, the newest line is preceded by a marker.
 func (lb *logBuffer) Lines() []string {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	out := make([]string, 0, lb.size)
-	// Return newest-first, up to size
+
 	total := lb.pos
 	if total > lb.size {
 		total = lb.size
 	}
-	for i := 0; i < total; i++ {
-		idx := (lb.pos - 1 - i) % lb.size
+	out := make([]string, 0, total+1)
+
+	// Newest first: iterate backwards
+	lastIdx := lb.pos - 1
+	startIdx := lastIdx - total + 1
+	for i := lastIdx; i >= startIdx; i-- {
+		idx := i % lb.size
 		if idx < 0 {
 			idx += lb.size
 		}
 		out = append(out, lb.buf[idx])
 	}
+
+	if lb.wrapped {
+		out = append(out, "--- [older logs cleared] ---")
+	}
 	return out
 }
 
-var logBuf = newLogBuffer(100)
+var logBuf = newLogBuffer(500)
 
 func init() {
 	log.SetOutput(io.MultiWriter(logBuf, os.Stderr))
@@ -615,6 +653,18 @@ var translations = map[string]map[string]string{
 		"logout":          "退出",
 		"about":           "关于",
 		"home":            "📥 离线下载",
+		"dashboard":       "📊 仪表盘",
+		"total_tasks":     "总任务",
+		"push_count":      "推送",
+		"rss_subs_short":  "订阅",
+		"active_indexers_short": "索引器",
+		"cache_entries":   "缓存条目",
+		"uptime_label":    "运行时间",
+		"status_connected": "已连接",
+		"pw_set":          "密码已设",
+		"pw_not_set":      "密码未设",
+		"manage_tasks_btn": "管理任务 →",
+		"manage_subs_btn": "管理订阅 →",
 		"files":           "📂 文件管理",
 		"subs":            "📋 订阅管理",
 		"settings":        "⚙️ 设置",
@@ -784,6 +834,11 @@ var translations = map[string]map[string]string{
 		"domain_label":            "访问域名",
 		"domain_hint":             "通过此域名访问 Web 面板",
 		"subs_interval_label":     "订阅间隔(分)",
+		"wework_label":            "企业微信 Webhook",
+		"test_btn":                "测试",
+		"notify_task":             "任务推送",
+		"notify_rss":              "RSS推送",
+		"notify_startup":          "启动通知",
 		"restart_service_btn":     "🔄 重启服务",
 		"confirm_btn":             "确定",
 		"browse_btn":              "📁 浏览",
@@ -868,6 +923,18 @@ var translations = map[string]map[string]string{
 		"logout":          "Logout",
 		"about":           "About",
 		"home":            "📥 Offline",
+		"dashboard":       "📊 Dashboard",
+		"total_tasks":     "Total Tasks",
+		"push_count":      "Pushed",
+		"pw_set":          "PW Set",
+		"pw_not_set":      "PW Not Set",
+		"rss_subs_short":  "Subs",
+		"active_indexers_short": "Indexers",
+		"cache_entries":   "Cached",
+		"uptime_label":    "Uptime",
+		"status_connected": "Connected",
+		"manage_tasks_btn": "Manage Tasks →",
+		"manage_subs_btn": "Manage Subs →",
 		"files":           "📂 File Manager",
 		"subs":            "📋 Subs",
 		"settings":        "⚙️ Settings",
@@ -1037,6 +1104,11 @@ var translations = map[string]map[string]string{
 		"domain_label":            "Domain",
 		"domain_hint":             "Access web panel via this domain",
 		"subs_interval_label":     "Subscription Interval (min)",
+		"wework_label":            "WeCom Webhook",
+		"test_btn":                "Test",
+		"notify_task":             "Task Push",
+		"notify_rss":              "RSS Push",
+		"notify_startup":          "Startup",
 		"restart_service_btn":     "🔄 Restart Service",
 		"confirm_btn":             "OK",
 		"browse_btn":              "📁 Browse",
@@ -1146,6 +1218,7 @@ func trf(lang, key string, args ...interface{}) string {
 // ---------- template ----------
 
 var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.FuncMap{
+	"hasPrefix": strings.HasPrefix,
 	"typeColor": func(t string) string {
 		switch strings.ToLower(t) {
 		case "public":
@@ -1308,6 +1381,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     .log-panel::-webkit-scrollbar { width: 6px; }
     .log-panel::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    .log-clear-marker {
+      display: block; padding: 4px 0; color: #f59e0b; font-size: 11px;
+      border-top: 1px dashed #f59e0b; border-bottom: 1px dashed #f59e0b;
+      margin: 4px 0; text-align: center;
+    }
     .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 0; margin-bottom: 10px; font-size: 13px; }
     .crumb { color: var(--accent); text-decoration: none; }
     .crumb:hover { text-decoration: underline; }
@@ -1410,7 +1488,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <input type="text" id="quick-search-input" placeholder="{{index .T "search"}}" value="{{.SearchQuery}}" onfocus="location.href='/search';this.blur()" autocomplete="off">
     </div>
     <div class="sidebar-nav">
-      <a href="/"{{if or (eq .Page "home") (eq .Page "")}} class="active"{{end}}>{{index .T "home"}}</a>
+      <a href="/"{{if or (eq .Page "home") (eq .Page "")}} class="active"{{end}}>{{index .T "dashboard"}}</a>
+      <a href="/tasks"{{if eq .Page "tasks"}} class="active"{{end}}>{{index .T "home"}}</a>
       <a href="/indexers"{{if eq .Page "indexers"}} class="active"{{end}}>{{index .T "indexers"}}</a>
       <a href="/fs"{{if eq .Page "fs"}} class="active"{{end}}>{{index .T "files"}}</a>
       <a href="/subs"{{if eq .Page "subs"}} class="active"{{end}}>{{index .T "subs"}}</a>
@@ -1433,7 +1512,40 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       {{end}}
     </div>
 
-    {{if or (eq .Page "home") (eq .Page "") (eq .Page "tasks")}}
+    {{if or (eq .Page "home") (eq .Page "")}}
+    <!-- dashboard -->
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:32px;font-weight:700;color:var(--accent);">{{.DashStats.TotalTasks}}</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px;">{{index .T "push_count"}}</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:32px;font-weight:700;color:var(--muted);">{{.DashStats.RssSubsActive}}/{{.DashStats.RssSubsTotal}}</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px;">{{index .T "rss_subs_short"}}</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:32px;font-weight:700;color:var(--accent-2);">{{.DashStats.ActiveIndexers}}</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px;">{{index .T "active_indexers_short"}}</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:32px;font-weight:700;color:#a78bfa;">{{.DashStats.CacheEntries}}</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px;">{{index .T "cache_entries"}}</div>
+      </div>
+    </div>
+    <div class="card panel" style="margin-top:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div>
+          <span style="font-size:13px;color:var(--muted);">{{index .T "uptime_label"}}: </span>
+          <strong>{{.DashStats.Uptime}}</strong>
+          {{if .HasAgent}}<span style="margin-left:12px;font-size:13px;color:var(--accent-2);">✓ 115 {{index .T "status_connected"}}</span>{{end}}
+          <span style="margin-left:12px;font-size:13px;{{if .HasPassword}}color:var(--accent-2);{{else}}color:var(--warn);{{end}}">{{if .HasPassword}}🔒 {{index .T "pw_set"}}{{else}}⚠ {{index .T "pw_not_set"}}{{end}}</span>
+        </div>
+      </div>
+    </div>
+    {{end}}
+
+    <!-- offline tasks page -->
+    {{if eq .Page "tasks"}}
     <div class="grid">
       <div class="card">
         <h2>{{index .T "add_magnet"}}</h2>
@@ -1663,7 +1775,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{end}}
 
     <!-- offline task list -->
-    {{if or (eq .Page "home") (eq .Page "") (eq .Page "tasks")}}
+    {{if eq .Page "tasks"}}
     <div class="card panel" style="margin-top:16px;">
       <h2>{{index .T "offline_tasks"}} ({{.TaskCount}})
         <span style="font-weight:400;font-size:12px;margin-left:8px;">
@@ -1767,7 +1879,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "log"}}
     <div class="card panel">
       <h2>{{index .T "runtime_log"}}</h2>
-      <div class="log-panel" id="log-panel" style="max-height:none;">{{range .Logs}}{{.}}
+      <div class="log-panel" id="log-panel" style="max-height:none;">{{range .Logs}}{{if hasPrefix . "--- ["}}<span class="log-clear-marker">{{.}}</span>{{else}}{{.}}{{end}}
 {{end}}</div>
     </div>
     <script>
@@ -1779,16 +1891,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var j=await r.json();
           if(!j.lines||j.lines.length===0)return;
           var panel=document.getElementById('log-panel');
-          var last=j.lines[j.lines.length-1];
-          if(last===logLastLine)return;
-          var startIdx=0;
-          for(var i=0;i<j.lines.length;i++){if(j.lines[i]===logLastLine){startIdx=i+1;break;}}
-          for(var i=startIdx;i<j.lines.length;i++){panel.appendChild(document.createTextNode(j.lines[i]+'\n'));}
-          logLastLine=last;
-          panel.scrollTop=panel.scrollHeight;
+          var first=j.lines[0];
+          if(first===logLastLine)return;
+          // Find where new lines start (before previously known newest)
+          var endIdx=j.lines.length;
+          for(var i=0;i<j.lines.length;i++){if(j.lines[i]===logLastLine){endIdx=i;break;}}
+          // Prepend new lines at top
+          var frag=document.createDocumentFragment();
+          for(var i=0;i<endIdx;i++){frag.appendChild(document.createTextNode(j.lines[i]+'\n'));}
+          panel.insertBefore(frag,panel.firstChild);
+          logLastLine=first;
         }catch(e){}
       }
-      (function(){var p=document.getElementById('log-panel');if(p){var t=p.textContent.trim();if(t)logLastLine=t.split('\n').pop();}})();
+      (function(){var p=document.getElementById('log-panel');if(p){var t=p.textContent.trim();if(t){var lines=t.split('\n');logLastLine=lines[0].trim();}}})();
     </script>
     {{end}}
 
@@ -1936,6 +2051,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         });
       }
       var pendingMagnet='';
+      async function testWebhook(){
+        var input=document.getElementById('wework_webhook');
+        var url=input?input.value.trim():'';
+        if(!url){alertModal('请先填写 Webhook 地址');return;}
+        var btn=event.target;
+        btn.disabled=true;btn.textContent='…';
+        try{
+          var r=await fetch('/api/notify/test',{method:'POST',body:new URLSearchParams({webhook:url}),headers:{'X-Requested-With':'XMLHttpRequest'}});
+          var j=await r.json();
+          if(j.status==='ok'){alertModal('✅ 测试消息已发送，请查看企业微信');}
+          else{alertModal('❌ '+j.message);}
+        }catch(e){alertModal('请求失败: '+e.message);}
+        btn.disabled=false;btn.textContent='测试';
+      }
       async function addTaskWithBrowse(magnet){
         pendingMagnet=magnet;
         browseCallback=function(id){closeModal();doAddTask(id);};
@@ -2291,6 +2420,26 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             <label>{{index .T "subs_interval_label"}}</label>
             <input name="subs_interval" type="number" placeholder="{{index .T "subs_interval_ph"}}" value="{{.Settings.SubsInterval}}" min="0" style="font-size:13px;">
           </div>
+          <div style="flex:3;min-width:260px;">
+            <label>{{index .T "wework_label"}}</label>
+            <div style="display:flex;gap:4px;">
+              <input name="wework_webhook" id="wework_webhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." value="{{.WeworkWebhook}}" style="flex:1;">
+              <button type="button" onclick="testWebhook()" style="margin-top:0;padding:4px 10px;font-size:12px;white-space:nowrap;">{{index .T "test_btn"}}</button>
+            </div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted);">
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
+                <input type="checkbox" name="notify_task" value="1" style="width:auto;margin:0;"{{if .NotifyTask}} checked{{end}}>{{index .T "notify_task"}}
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
+                <input type="checkbox" name="notify_rss" value="1" style="width:auto;margin:0;"{{if .NotifyRSS}} checked{{end}}>{{index .T "notify_rss"}}
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
+                <input type="checkbox" name="notify_startup" value="1" style="width:auto;margin:0;"{{if .NotifyStartup}} checked{{end}}>{{index .T "notify_startup"}}
+              </label>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);">
           <button type="submit" style="margin-top:0;">{{index .T "save"}}</button>
           <button type="button" onclick="restartServer()" style="margin-top:0;background:var(--danger);">{{index .T "restart_service_btn"}}</button>
         </div>
@@ -2344,7 +2493,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 // ---------- server lifecycle ----------
 
 func New(agent *p115pkg.Agent, port int) *Server {
-	s := &Server{Port: port, fsCache: make(map[string]fsCacheEntry), entryCache: make(map[string]p115pkg.DirEntry)}
+	s := &Server{Port: port, startTime: time.Now(), fsCache: make(map[string]fsCacheEntry), entryCache: make(map[string]p115pkg.DirEntry)}
 	if agent != nil {
 		agent.Dedup = globalDedup
 		s.Agent = agent
@@ -2355,6 +2504,12 @@ func New(agent *p115pkg.Agent, port int) *Server {
 // SetDomain sets the domain to bind the server to.
 func (s *Server) SetDomain(domain string) {
 	s.Domain = domain
+}
+
+// SetTLS configures TLS certificate and key for HTTPS.
+func (s *Server) SetTLS(certFile, keyFile string) {
+	s.CertFile = certFile
+	s.KeyFile = keyFile
 }
 
 // SetIndexerManager sets the indexer manager on the server.
@@ -2370,9 +2525,25 @@ func (s *Server) LoadProxyConfig() {
 	}
 }
 
+// LoadNotifyConfig reads notification webhook from config.toml.
+func (s *Server) LoadNotifyConfig() {
+	cfg, _, err := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
+	if err == nil && cfg.Notify.WeworkWebhook != "" {
+		s.WeworkWH = cfg.Notify.WeworkWebhook
+		notify.SetWebhook(cfg.Notify.WeworkWebhook)
+	}
+}
+
 // saveProxyConfig persists the current proxy setting to config.toml.
 func (s *Server) saveProxyConfig() {
 	_ = config.SaveProxy(s.ProxyHTTP)
+}
+
+func maskWebhook(url string) string {
+	if len(url) > 40 {
+		return url[:35] + "..."
+	}
+	return url
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -2388,7 +2559,15 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start subscription auto-runner
 	go s.autoRunSubscriptions()
 
-	log.Printf("server started on port %d (accessible via any domain/IP)\n", s.Port)
+	useTLS := s.CertFile != "" && s.KeyFile != ""
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	log.Printf("server started on %s://0.0.0.0:%d\n", scheme, s.Port)
+	if useTLS {
+		return srv.ListenAndServeTLS(s.CertFile, s.KeyFile)
+	}
 	return srv.ListenAndServe()
 }
 
@@ -2462,6 +2641,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/", s.authCheck(s.handleDashboard))
+	mux.HandleFunc("/tasks", s.authCheck(s.handleTasks))
 	mux.HandleFunc("/add", s.authCheck(s.handleAddTask))
 	mux.HandleFunc("/rss/feed", s.authCheck(s.handleRSSFeed))
 	mux.HandleFunc("/clear", s.authCheck(s.handleClearTask))
@@ -2498,6 +2678,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/about", s.authCheck(s.handleAbout))
 	mux.HandleFunc("/api/tasks", s.authCheck(s.handleAPITasks))
 	mux.HandleFunc("/api/logs", s.authCheck(s.handleAPILogs))
+	mux.HandleFunc("/api/notify/test", s.authCheck(s.handleNotifyTest))
 	mux.HandleFunc("/api/lang", s.authCheck(s.handleAPILang))
 }
 
@@ -2637,6 +2818,48 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.pageData("", "")
 	data.Page = "home"
+	data.HasAgent = s.Agent != nil
+	data.HasPassword = webPassword != ""
+
+	// Compute dashboard stats
+	if s.Agent != nil {
+		tasks, _ := s.Agent.ListTasks()
+		data.DashStats.TotalTasks = len(tasks)
+	}
+
+	feeds := s.readRssFeeds()
+	for _, entries := range feeds {
+		for _, e := range entries {
+			data.DashStats.RssSubsTotal++
+			if e.Enabled {
+				data.DashStats.RssSubsActive++
+			}
+		}
+	}
+
+	if s.IdxMgr != nil {
+		data.DashStats.ActiveIndexers = s.IdxMgr.ActiveCount()
+	}
+
+	for _, set := range globalDedup.subs {
+		data.DashStats.CacheEntries += len(set)
+	}
+
+	data.DashStats.Uptime = formatDuration(time.Since(s.startTime))
+
+	if err := dashboardTemplate.Execute(w, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	data := s.pageData("", "")
+	data.Page = "tasks"
+	data.HasAgent = s.Agent != nil
 	if err := dashboardTemplate.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -2666,6 +2889,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[task] web submitted %d tasks, cid=%s", len(task.Tasks), task.Cid)
+	notify.Send(notify.TaskSubmitted(len(task.Tasks), task.Cid), s.loadWebSettings().NotifyTask)
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","message":"%s"}`, trf(s.langFromAgent(), "tasks_submitted_fmt", len(task.Tasks)))
 }
@@ -3005,11 +3229,35 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ws.SubsInterval = v
 			changes = append(changes, fmt.Sprintf("subs_interval=%d", v))
 		}
-		// Web password
-		if pw := sanitizePassword(r.FormValue("web_password")); pw != "" && pw != ws.WebPassword {
+		// Web password (allow clearing by saving empty)
+		if pw := sanitizePassword(r.FormValue("web_password")); pw != ws.WebPassword {
 			webPassword = pw
 			ws.WebPassword = pw
-			changes = append(changes, "web_password=***")
+			if pw == "" {
+				changes = append(changes, "web_password=cleared")
+			} else {
+				changes = append(changes, "web_password=***")
+			}
+		}
+		// WeChat Work webhook
+		if v := strings.TrimSpace(r.FormValue("wework_webhook")); v != s.WeworkWH {
+			s.WeworkWH = v
+			notify.SetWebhook(v)
+			_ = config.SaveNotifyWebhook(v)
+			changes = append(changes, "wework_webhook="+maskWebhook(v))
+		}
+		// Notification toggles
+		if v := r.FormValue("notify_task") == "1"; v != ws.NotifyTask {
+			ws.NotifyTask = v
+			changes = append(changes, fmt.Sprintf("notify_task=%v", v))
+		}
+		if v := r.FormValue("notify_rss") == "1"; v != ws.NotifyRSS {
+			ws.NotifyRSS = v
+			changes = append(changes, fmt.Sprintf("notify_rss=%v", v))
+		}
+		if v := r.FormValue("notify_startup") == "1"; v != ws.NotifyStartup {
+			ws.NotifyStartup = v
+			changes = append(changes, fmt.Sprintf("notify_startup=%v", v))
 		}
 
 		if len(changes) > 0 {
@@ -3038,6 +3286,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data.Page = "settings"
 		data.ProxyHTTP = s.ProxyHTTP
 		data.Domain = s.Domain
+		data.WeworkWebhook = s.WeworkWH
+		data.NotifyTask = ws.NotifyTask
+		data.NotifyRSS = ws.NotifyRSS
+		data.NotifyStartup = ws.NotifyStartup
 		if s.Agent != nil {
 			data.Settings = s.Agent.GetSettings()
 		}
@@ -3066,6 +3318,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	data.Page = "settings"
 	data.ProxyHTTP = s.ProxyHTTP
 	data.Domain = s.Domain
+	data.WeworkWebhook = s.WeworkWH
+	data.NotifyTask = ws.NotifyTask
+	data.NotifyRSS = ws.NotifyRSS
+	data.NotifyStartup = ws.NotifyStartup
 	if s.Agent != nil {
 		data.Settings = s.Agent.GetSettings()
 	}
@@ -3297,6 +3553,28 @@ func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"lines": lines,
 	})
+}
+
+func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	webhook := strings.TrimSpace(r.FormValue("webhook"))
+	if webhook == "" {
+		webhook = s.WeworkWH
+	}
+	if webhook == "" {
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "Webhook URL is empty"})
+		return
+	}
+	// Send a test message synchronously
+	err := notify.Test(webhook)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": "Test message sent"})
 }
 
 func (s *Server) handleAPILang(w http.ResponseWriter, r *http.Request) {
@@ -4316,6 +4594,25 @@ func formatSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%.2fGB", float64(bytes)/(1024*1024*1024))
 	}
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
+	days := h / 24
+	h = h % 24
+	return fmt.Sprintf("%dd%dh", days, h)
 }
 
 func decodeOfflineTask(r *http.Request) (OfflineTask, error) {

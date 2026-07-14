@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/deadblue/elevengo"
 	p115pkg "github.com/mguyenanastacio-glitch/pan-fetcher/p115"
@@ -80,7 +81,7 @@ func newTestServer() (*Server, *fakeServerAgent, *http.ServeMux) {
 	fake := &fakeServerAgent{
 		userInfo: elevengo.UserInfo{Id: 123, Name: "tester", IsVip: true},
 	}
-	srv := &Server{Agent: fake, Port: 8115}
+	srv := &Server{Agent: fake, Port: 8115, startTime: time.Now()}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 	return srv, fake, mux
@@ -99,8 +100,27 @@ func TestDashboardRenders(t *testing.T) {
 	if !strings.Contains(body, "pan-fetcher") {
 		t.Fatalf("dashboard title missing: %s", body)
 	}
+	// Dashboard shows stats cards (check for rendered label)
+	if !strings.Contains(body, "推送") && !strings.Contains(body, "Push") {
+		t.Fatalf("dashboard stats missing: %s", body)
+	}
+	if !strings.Contains(body, "/tasks") {
+		t.Fatalf("dashboard tasks link missing: %s", body)
+	}
+}
+
+func TestTasksPageHasForms(t *testing.T) {
+	_, _, mux := newTestServer()
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
 	if !strings.Contains(body, "/add") || !strings.Contains(body, "/clear") {
-		t.Fatalf("dashboard forms missing: %s", body)
+		t.Fatalf("tasks page forms missing: %s", body)
 	}
 }
 

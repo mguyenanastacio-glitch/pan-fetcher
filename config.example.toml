@@ -13,6 +13,9 @@ cookies_file = '.cookies'
 port = 8115
 # 访问域名，用于外网访问 Web 面板
 # domain = 'pan.example.com'
+# HTTPS/TLS 证书（两者都配置即启用 HTTPS）
+# cert_file = '/etc/ssl/certs/pan-fetcher.pem'
+# key_file = '/etc/ssl/private/pan-fetcher.key'
 
 [database]
 # SQLite 数据库路径，留空使用默认 db.sqlite
@@ -28,3 +31,7 @@ cooldown_max_ms = 1100
 [proxy]
 # HTTP 代理地址，留空不使用
 # http = 'http://127.0.0.1:7890'
+
+[notify]
+# 企业微信机器人 Webhook 通知
+# wework_webhook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx'

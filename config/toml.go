@@ -17,6 +17,7 @@ type TOMLConfig struct {
 	Database TOMLDatabaseConfig        `toml:"database"`
 	P115     TOMLP115Config            `toml:"p115"`
 	Proxy    TOMLProxyConfig           `toml:"proxy"`
+	Notify   TOMLNotifyConfig          `toml:"notify"`
 	RSS      []TOMLRSSConfig           `toml:"rss"`
 	Sites    map[string]TOMLSiteConfig `toml:"sites"`
 }
@@ -29,8 +30,10 @@ type TOMLAuthConfig struct {
 
 // TOMLServerConfig represents server configuration
 type TOMLServerConfig struct {
-	Port   int    `toml:"port"`   // Valid range: 1-65535
-	Domain string `toml:"domain"` // Bind domain (e.g. "example.com" or "0.0.0.0")
+	Port     int    `toml:"port"`      // Valid range: 1-65535
+	Domain   string `toml:"domain"`    // Bind domain (e.g. "example.com" or "0.0.0.0")
+	CertFile string `toml:"cert_file"` // TLS certificate file path
+	KeyFile  string `toml:"key_file"`  // TLS private key file path
 }
 
 // TOMLDatabaseConfig represents database configuration
@@ -49,6 +52,11 @@ type TOMLP115Config struct {
 // TOMLProxyConfig represents proxy configuration
 type TOMLProxyConfig struct {
 	HTTP string `toml:"http"` // HTTP proxy URL
+}
+
+// TOMLNotifyConfig represents notification configuration
+type TOMLNotifyConfig struct {
+	WeworkWebhook string `toml:"wework_webhook"` // WeChat Work bot webhook URL
 }
 
 // TOMLRSSConfig represents a single RSS feed configuration
@@ -269,6 +277,36 @@ func SaveServerDomain(domain string) error {
 	}
 
 	cfg.Server.Domain = domain
+
+	data, err := toml.Marshal(&cfg)
+	if err != nil {
+		return fmt.Errorf("marshal toml: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("write config.toml: %w", err)
+	}
+	return nil
+}
+
+// SaveNotifyWebhook persists the WeChat Work webhook to config.toml.
+func SaveNotifyWebhook(webhook string) error {
+	path, found := FindConfigFile()
+	if !found {
+		if webhook == "" {
+			return nil
+		}
+		path = "config.toml"
+	}
+
+	var cfg TOMLConfig
+	if data, err := os.ReadFile(path); err == nil {
+		if err := toml.Unmarshal(data, &cfg); err != nil {
+			cfg = TOMLConfig{}
+		}
+	}
+
+	cfg.Notify.WeworkWebhook = webhook
 
 	data, err := toml.Marshal(&cfg)
 	if err != nil {

@@ -37,6 +37,7 @@ type Config struct {
 	Database DatabaseConfig
 	P115     P115Config
 	Proxy    ProxyConfig
+	Notify   NotifyConfig
 	RSS      map[string][]RssConfig
 	Sites    map[string]SiteConfig
 }
@@ -48,8 +49,10 @@ type AuthConfig struct {
 
 // ServerConfig represents server configuration
 type ServerConfig struct {
-	Port   int
-	Domain string // Bind domain, e.g. "example.com" or "0.0.0.0"
+	Port     int
+	Domain   string // Bind domain, e.g. "example.com" or "0.0.0.0"
+	CertFile string // TLS certificate path
+	KeyFile  string // TLS private key path
 }
 
 // DatabaseConfig represents database configuration
@@ -70,6 +73,11 @@ type ProxyConfig struct {
 	HTTP string
 }
 
+// NotifyConfig represents notification configuration
+type NotifyConfig struct {
+	WeworkWebhook string
+}
+
 // ConfigSource tracks the source of loaded configuration for cookie save operations
 type ConfigSource struct {
 	TOMLPath    string // Path to config.toml if loaded
@@ -84,6 +92,10 @@ type CLIParams struct {
 	PortSet          bool
 	Domain           string
 	DomainSet        bool
+	CertFile         string
+	CertFileSet      bool
+	KeyFile          string
+	KeyFileSet       bool
 	ChunkDelay       int
 	ChunkDelaySet    bool
 	ChunkSize        int
@@ -162,6 +174,18 @@ func Resolve(cli CLIParams, toml *TOMLConfig, tomlPath string, legacy *LegacyCon
 		cfg.Server.Domain = toml.Server.Domain
 	}
 
+	// TLS: CLI cert/key > TOML cert/key
+	if cli.CertFileSet || cli.CertFile != "" {
+		cfg.Server.CertFile = cli.CertFile
+	} else if toml != nil && toml.Server.CertFile != "" {
+		cfg.Server.CertFile = toml.Server.CertFile
+	}
+	if cli.KeyFileSet || cli.KeyFile != "" {
+		cfg.Server.KeyFile = cli.KeyFile
+	} else if toml != nil && toml.Server.KeyFile != "" {
+		cfg.Server.KeyFile = toml.Server.KeyFile
+	}
+
 	// Database priority: TOML database.path > existing db.sqlite > default "db.sqlite"
 	if toml != nil && toml.Database.Path != "" {
 		// Resolve relative path based on config.toml directory
@@ -231,6 +255,11 @@ func Resolve(cli CLIParams, toml *TOMLConfig, tomlPath string, legacy *LegacyCon
 	// Proxy: TOML [proxy].http
 	if toml != nil && toml.Proxy.HTTP != "" {
 		cfg.Proxy.HTTP = toml.Proxy.HTTP
+	}
+
+	// Notify: TOML [notify].wework_webhook
+	if toml != nil && toml.Notify.WeworkWebhook != "" {
+		cfg.Notify.WeworkWebhook = toml.Notify.WeworkWebhook
 	}
 
 	return cfg

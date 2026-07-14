@@ -78,6 +78,8 @@ var (
 	// server subcommand
 	port        int
 	domain      string
+	certFile    string
+	keyFile     string
 	webPassword string
 
 	serverCmd = &cobra.Command{
@@ -89,7 +91,9 @@ var (
 			server.LoadPersistedPassword()
 			srv := server.New(pAgent, cfg.Server.Port)
 			srv.SetDomain(cfg.Server.Domain)
+			srv.SetTLS(cfg.Server.CertFile, cfg.Server.KeyFile)
 			srv.LoadProxyConfig()
+			srv.LoadNotifyConfig()
 
 			// Initialize indexer manager from YAML definitions.
 			// Look in: data dir > working dir > executable dir.
@@ -147,6 +151,8 @@ func init() {
 	// server subcommand
 	serverCmd.Flags().IntVarP(&port, "port", "p", 8115, "server port")
 	serverCmd.Flags().StringVar(&domain, "domain", "", "bind domain/IP (e.g. 'example.com' or '0.0.0.0', empty = bind all)")
+	serverCmd.Flags().StringVar(&certFile, "cert-file", "", "TLS certificate file path")
+	serverCmd.Flags().StringVar(&keyFile, "key-file", "", "TLS private key file path")
 	serverCmd.Flags().StringVar(&webPassword, "web-password", "", "web login password (empty = no auth)")
 	rootCmd.AddCommand(serverCmd)
 }
@@ -179,6 +185,14 @@ func buildCLIParams(cmd *cobra.Command) config.CLIParams {
 	if cmd != nil && cmd.Flags().Changed("domain") {
 		cliParams.Domain = domain
 		cliParams.DomainSet = true
+	}
+	if cmd != nil && cmd.Flags().Changed("cert-file") {
+		cliParams.CertFile = certFile
+		cliParams.CertFileSet = true
+	}
+	if cmd != nil && cmd.Flags().Changed("key-file") {
+		cliParams.KeyFile = keyFile
+		cliParams.KeyFileSet = true
 	}
 	return cliParams
 }
