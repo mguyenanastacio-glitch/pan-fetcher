@@ -94,6 +94,7 @@ var (
 			srv.SetTLS(cfg.Server.CertFile, cfg.Server.KeyFile)
 			srv.LoadProxyConfig()
 			srv.LoadNotifyConfig()
+			srv.LoadJackettConfig()
 
 			// Initialize indexer manager from YAML definitions.
 			// Look in: data dir > working dir > executable dir.

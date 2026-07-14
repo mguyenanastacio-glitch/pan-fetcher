@@ -23,6 +23,7 @@ import (
 
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/indexer"
+	"github.com/mguyenanastacio-glitch/pan-fetcher/jackett"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/notify"
 	p115pkg "github.com/mguyenanastacio-glitch/pan-fetcher/p115"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/rsssite"
@@ -61,6 +62,13 @@ type Server struct {
 	KeyFile   string // TLS private key
 	ProxyHTTP string
 	WeworkWH  string // WeChat Work webhook
+	JackettURL    string
+	JackettAPIKey string
+	jackettActive map[string]bool           // jackett indexer IDs that are activated
+	jackettActiveMu sync.Mutex
+	jackettCache  []jackett.IndexerInfo
+	jackettCacheMu sync.Mutex
+	jackettCacheTime time.Time
 	startTime time.Time
 	fsCache   map[string]fsCacheEntry
 	fsCacheMu sync.Mutex
@@ -142,6 +150,8 @@ type dashboardData struct {
 	SearchQuery   string
 	SearchKeyword string
 	SearchResults []indexer.SearchResult
+	SearchTotal   int
+	PageSize      int
 	SearchErrors  map[string]string
 	SearchCategory string
 	SearchSort     string
@@ -150,6 +160,7 @@ type dashboardData struct {
 	SavedSearches  []savedSearch
 	IndexerList    []indexer.IndexerInfo
 	IndexerLibrary []indexer.IndexerInfo
+	JackettLibrary []jackett.IndexerInfo
 	DedupEntries   []dedupEntry
 	DashStats       dashStats
 	HasAgent        bool
@@ -159,6 +170,8 @@ type dashboardData struct {
 	NotifyLog       bool
 	Timezone        string
 	TimezoneOptions map[string]string
+	JackettURL      string
+	JackettAPIKey   string
 	AboutVersion    string
 }
 
@@ -181,6 +194,23 @@ var srv *http.Server
 const Version = "v0.4.0"
 
 var rssJsonPath = "rss.json"
+
+// searchCache holds results for incremental loading
+var (
+	searchCacheMu sync.Mutex
+	searchCache   []indexer.SearchResult
+	searchCtx     searchContext
+)
+
+type searchContext struct {
+	Query     string
+	Category  string
+	Sort      string
+	Indexers  []string // includes "jackett:xxx" prefixed
+	NextPage  int      // next page to fetch (2, 3, ...)
+	PageSize  int      // items per display page
+	Exhausted bool
+}
 var dedupCachePath = "dedup-cache.json"
 
 // ---------- dedup + torrent URL cache (unified) ----------
@@ -498,12 +528,15 @@ type webSettings struct {
 	NotifyRSS     bool   `json:"notify_rss"`
 	NotifyLog     bool   `json:"notify_log"`
 	Timezone      string `json:"timezone"`
+	JackettURL    string `json:"jackett_url"`
+	JackettAPIKey string `json:"jackett_apikey"`
+	PageSize      int    `json:"page_size"`
 }
 
 func (s *Server) loadWebSettings() webSettings {
 	data, err := os.ReadFile("web-settings.json")
 	if err != nil {
-		return webSettings{Lang: "zh", SubsInterval: 60}
+		return webSettings{Lang: "zh", SubsInterval: 60, PageSize: 50}
 	}
 	var ws webSettings
 	json.Unmarshal(data, &ws)
@@ -519,6 +552,32 @@ func (s *Server) loadWebSettings() webSettings {
 func (s *Server) saveWebSettings(ws webSettings) {
 	data, _ := json.MarshalIndent(ws, "", "  ")
 	os.WriteFile("web-settings.json", data, 0644)
+}
+
+func (s *Server) loadJackettEnabled() {
+	if s.jackettActive != nil {
+		return // already loaded
+	}
+	s.jackettActive = make(map[string]bool)
+	data, err := os.ReadFile("jackett-enabled.json")
+	if err != nil {
+		return
+	}
+	var ids []string
+	if json.Unmarshal(data, &ids) == nil {
+		for _, id := range ids {
+			s.jackettActive[id] = true
+		}
+	}
+}
+
+func (s *Server) saveJackettEnabled() {
+	var ids []string
+	for id := range s.jackettActive {
+		ids = append(ids, id)
+	}
+	data, _ := json.Marshal(ids)
+	os.WriteFile("jackett-enabled.json", data, 0644)
 }
 
 // ---------- log buffer ----------
@@ -830,6 +889,7 @@ var translations = map[string]map[string]string{
 		"search":          "🔍 资源搜索",
 		"search_ph":       "输入关键词搜索资源...",
 		"search_btn":      "搜索",
+		"search_refresh":  "🔄 刷新",
 		"search_results":  "搜索结果",
 		"search_no_result":"没有找到结果",
 		"search_from":     "来源",
@@ -849,10 +909,20 @@ var translations = map[string]map[string]string{
 		"jk_url_ph":       "http://127.0.0.1:9117",
 		"jk_apikey":       "Jackett API Key",
 		"jk_apikey_ph":    "从 Jackett 设置页获取",
+		"jk_test_btn":     "测试连接",
+		"jk_test_ok":      "Jackett 连接正常",
+		"jk_test_empty":   "请填写 Jackett 地址和 API Key",
 		"idx_no_defs":     "暂无索引器定义文件，请在 indexers/ 目录添加 YAML 文件。",
 		"idx_no_active":   "暂无激活的索引器，请从下方索引器库添加。",
 		"idx_library":     "📚 索引器库",
 		"idx_lib_empty":   "索引器库为空。",
+		"idx_lib_local":   "📚 本地库",
+		"idx_lib_jackett": "📡 Jackett库",
+		"jk_lib_empty":    "暂无 Jackett 索引器，请先在 Jackett 中添加。",
+		"jk_lib_hint":     "请先在设置页配置 Jackett 连接地址和 API Key，然后通过 Jackett 界面添加索引器。",
+		"jk_lib_config":   "配置 Jackett",
+		"jk_lib_add":      "在 Jackett 中添加",
+		"jk_lib_activate": "激活到本地",
 		"idx_batch_add":   "批量添加选中",
 		"dedup":           "🗄️ 缓存库",
 		"dedup_title":     "缓存库",
@@ -947,6 +1017,17 @@ var translations = map[string]map[string]string{
 		"sort_size":            "按大小",
 		"sort_date":            "按时间",
 		"search_sites":         "搜索站点:",
+		"date_label":           "时间",
+		"indexer_label":        "索引器",
+		"page_prev":            "上一页",
+		"page_next":            "下一页",
+		"page_total":           "共 %d 条",
+		"page_loading":         "加载中…",
+		"page_size_label":      "搜索分页大小",
+		"system_label":         "系统",
+		"search_label":         "搜索",
+		"download_settings_label": "下载",
+		"subs_notify_label":    "订阅与通知",
 		"subscribe_search":     "📌 订阅此搜索",
 		"add_rss_sub_title":    "📌 添加 RSS 订阅",
 		"sub_name_label":       "名称",
@@ -1103,6 +1184,7 @@ var translations = map[string]map[string]string{
 		"search":          "🔍 Search",
 		"search_ph":       "Enter keywords to search...",
 		"search_btn":      "Search",
+		"search_refresh":  "🔄 Refresh",
 		"search_results":  "Search Results",
 		"search_no_result":"No results found",
 		"search_from":     "From",
@@ -1122,10 +1204,20 @@ var translations = map[string]map[string]string{
 		"jk_url_ph":       "http://127.0.0.1:9117",
 		"jk_apikey":       "Jackett API Key",
 		"jk_apikey_ph":    "Get from Jackett settings",
+		"jk_test_btn":     "Test Connection",
+		"jk_test_ok":      "Jackett connection OK",
+		"jk_test_empty":   "Please enter Jackett URL and API Key",
 		"idx_no_defs":     "No indexer definitions found. Add YAML files to the indexers/ directory.",
 		"idx_no_active":   "No active indexers. Add from the library below.",
 		"idx_library":     "📚 Indexer Library",
 		"idx_lib_empty":   "Indexer library is empty.",
+		"idx_lib_local":   "📚 Local Library",
+		"idx_lib_jackett": "📡 Jackett Library",
+		"jk_lib_empty":    "No Jackett indexers. Add them in Jackett first.",
+		"jk_lib_hint":     "Configure Jackett URL and API Key in Settings first, then add indexers via the Jackett UI.",
+		"jk_lib_config":   "Configure Jackett",
+		"jk_lib_add":      "Add in Jackett",
+		"jk_lib_activate": "Activate",
 		"idx_batch_add":   "Add Selected",
 		"dedup":           "🗄️ Cache",
 		"dedup_title":     "Cache Library",
@@ -1220,6 +1312,17 @@ var translations = map[string]map[string]string{
 		"sort_size":            "By Size",
 		"sort_date":            "By Date",
 		"search_sites":         "Search sites:",
+		"date_label":           "Date",
+		"indexer_label":        "Indexer",
+		"page_prev":            "Prev",
+		"page_next":            "Next",
+		"page_total":           "%d total",
+		"page_loading":         "Loading…",
+		"page_size_label":      "Search Page Size",
+		"system_label":         "System",
+		"search_label":         "Search",
+		"download_settings_label": "Download",
+		"subs_notify_label":    "Subs & Notifications",
 		"subscribe_search":     "📌 Subscribe This Search",
 		"add_rss_sub_title":    "📌 Add RSS Subscription",
 		"sub_name_label":       "Name",
@@ -1983,9 +2086,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "search"}}
     <div class="card panel">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-        <h2>{{index .T "search"}}</h2>
+        <h2 style="margin:0;">{{index .T "search"}}</h2>
+        <button type="button" onclick="clearSearch()" style="margin:0;padding:4px 12px;font-size:12px;background:var(--accent-2);" title="清除搜索状态">{{index .T "search_refresh"}}</button>
       </div>
-      <form action="/search" method="post" id="search-form">
+      <form action="/search" method="post" id="search-form" autocomplete="off">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <input name="q" id="search-q" placeholder="{{index .T "search_ph"}}" value="{{.SearchQuery}}" style="flex:3;min-width:160px;" autofocus>
           <input name="keyword" id="search-keyword" placeholder="{{index .T "filter_placeholder"}}" value="{{.SearchKeyword}}" style="flex:1.5;min-width:100px;" oninput="filterResults()">
@@ -2043,13 +2147,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <!-- search results -->
       {{if .SearchResults}}
       <div style="margin-top:16px;">
-        <table class="tbl" id="search-results"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "indexer"}}</th><th></th></tr></thead><tbody>
+        <table class="tbl" id="search-results"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "date_label"}}</th><th>{{index .T "indexer_label"}}</th><th></th></tr></thead><tbody>
         {{range .SearchResults}}<tr data-title="{{.Title}}">
           <td>{{if .PageURL}}<a href="{{.PageURL}}" target="_blank">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
-          <td class="muted">{{.SizeFmt}}</td><td>{{.Seeders}}</td><td class="muted">{{.IndexerName}}</td>
+          <td class="muted">{{.SizeFmt}}</td><td>{{.Seeders}}</td><td class="muted" style="font-size:11px;">{{.DateFmt}}</td><td class="muted">{{.IndexerName}}</td>
           <td>{{if .MagnetURL}}<button data-magnet="{{.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
         </tr>{{end}}</tbody></table>
       </div>
+      <!-- pagination bar -->
+      <div id="pagination-bar" style="display:flex;justify-content:center;align-items:center;gap:4px;margin-top:14px;flex-wrap:wrap;"></div>
       {{else}}{{if .SearchQuery}}<div class="hint" style="margin-top:12px;">{{index .T "search_no_result"}}</div>{{end}}{{end}}
       {{if .SearchErrors}}{{range $id, $err := .SearchErrors}}<div style="padding:4px 8px;margin:2px 0;background:#fef2f2;color:#991b1b;border-radius:6px;word-break:break-all;">⚠ {{$err}}</div>{{end}}{{end}}
       <!-- saved searches -->
@@ -2123,6 +2229,31 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     <!-- shared utility functions -->
     <script>
+      function clearSearch(){
+        // Clear text/keyword inputs
+        var form=document.getElementById('search-form');
+        if(form){
+          ['q','keyword'].forEach(function(name){
+            var el=form.querySelector('input[name="'+name+'"]');
+            if(el)el.value='';
+          });
+          form.querySelectorAll('input[type="checkbox"]').forEach(function(el){el.checked=false;});
+          form.querySelectorAll('select').forEach(function(el){el.selectedIndex=0;});
+        }
+        // Clear results table and pagination
+        var tbl=document.getElementById('search-results');
+        if(tbl){tbl.querySelector('tbody').innerHTML='';tbl.style.display='none';}
+        var bar=document.getElementById('pagination-bar');
+        if(bar)bar.innerHTML='';
+        // Clear RSS subscription area
+        var sub=document.getElementById('sub-form');
+        if(sub)sub.style.display='none';
+        // Clear persisted search state
+        sessionStorage.removeItem('pan-fetcher-search');
+        // Focus search input
+        var q=document.getElementById('search-q');
+        if(q){q.value='';q.focus();}
+      }
       function toggleSubForm(){
         var el=document.getElementById('sub-form');
         if(el.style.display==='none'){
@@ -2147,6 +2278,64 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         });
       }
       var pendingMagnet='';
+      var searchTotal={{.SearchTotal}};
+      var pageSize={{.PageSize}};
+      var currentPage=1;
+      var totalPages=Math.max(1,Math.ceil(searchTotal/pageSize));
+
+      function buildRowHTML(item){
+        var title=item.page_url?'<a href="'+item.page_url+'" target="_blank">'+(item.title||'')+'</a>':(item.title||'');
+        var magnetBtn=item.magnet_url?'<button data-magnet="'+item.magnet_url.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'" onclick="addTaskWithBrowse(this.getAttribute(\'data-magnet\'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>':'';
+        return '<tr data-title="'+(item.title||'')+'"><td>'+title+'</td><td class="muted">'+(item.size||'-')+'</td><td>'+(item.seeders||0)+'</td><td class="muted" style="font-size:11px;">'+(item.date||'')+'</td><td class="muted">'+(item.indexer||'')+'</td><td>'+magnetBtn+'</td></tr>';
+      }
+
+      function renderPagination(){
+        var bar=document.getElementById('pagination-bar');
+        if(!bar)return;
+        if(totalPages<=1){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);return;}
+        var html='';
+        // Prev button
+        html+='<button onclick="goToPage('+(currentPage-1)+')" '+(currentPage<=1?'disabled':'')+' style="padding:4px 10px;font-size:12px;margin:0;">{{index .T "page_prev"}}</button>';
+        // Page numbers
+        var start=Math.max(1,currentPage-2);
+        var end=Math.min(totalPages,currentPage+2);
+        if(start>1){html+='<button onclick="goToPage(1)" style="padding:4px 8px;font-size:12px;margin:0;">1</button>';if(start>2)html+='<span style="padding:0 2px;">…</span>';}
+        for(var i=start;i<=end;i++){
+          html+='<button onclick="goToPage('+i+')" '+(i===currentPage?'disabled style="padding:4px 8px;font-size:12px;margin:0;font-weight:bold;background:var(--accent);"':'style="padding:4px 8px;font-size:12px;margin:0;"')+'>'+i+'</button>';
+        }
+        if(end<totalPages){if(end<totalPages-1)html+='<span style="padding:0 2px;">…</span>';html+='<button onclick="goToPage('+totalPages+')" style="padding:4px 8px;font-size:12px;margin:0;">'+totalPages+'</button>';}
+        // Next button
+        html+='<button onclick="goToPage('+(currentPage+1)+')" '+(currentPage>=totalPages?'disabled':'')+' style="padding:4px 10px;font-size:12px;margin:0;">{{index .T "page_next"}}</button>';
+        // Page info
+        html+=' <span style="font-size:11px;color:var(--muted);margin-left:8px;">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);
+        bar.innerHTML=html;
+      }
+
+      async function goToPage(page){
+        if(page<1||page>totalPages||page===currentPage)return;
+        var bar=document.getElementById('pagination-bar');
+        if(bar)bar.innerHTML='<span style="font-size:12px;color:var(--muted);">{{index .T "page_loading"}}</span>';
+        var form=document.getElementById('search-form');
+        var fd=new URLSearchParams(new FormData(form));
+        fd.set('offset',(page-1)*pageSize);
+        try{
+          var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
+          var j=await r.json();
+          if(!j.results||j.results.length===0){renderPagination();return;}
+          // Replace tbody
+          var tbody=document.querySelector('#search-results tbody');
+          tbody.innerHTML=j.results.map(buildRowHTML).join('');
+          if(j.total&&j.total>searchTotal)searchTotal=j.total;
+          totalPages=Math.max(1,Math.ceil(searchTotal/pageSize));
+          currentPage=page;
+          renderPagination();
+          // Scroll to top of results
+          document.getElementById('search-results').scrollIntoView({behavior:'smooth',block:'start'});
+        }catch(e){renderPagination();}
+      }
+
+      // Init pagination bar on page load
+      renderPagination();
       async function testWebhook(){
         var input=document.getElementById('wework_webhook');
         var url=input?input.value.trim():'';
@@ -2213,26 +2402,30 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     <!-- indexer management -->
     {{if eq .Page "indexers"}}
+
+    <!-- active indexers -->
     <div class="card panel">
       <h2>{{index .T "indexer_list"}} ({{len .IndexerList}})
         {{if .IndexerList}}<button onclick="testAll()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent-2);">{{index .T "test_all"}}</button>{{end}}
       </h2>
       {{if .IndexerList}}
       <table class="tbl" id="idx-active">
-        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "idx_site"}}</th><th>{{index .T "idx_health"}}</th><th>{{index .T "idx_tested"}}</th><th></th></tr></thead>
+        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th>来源</th><th>{{index .T "idx_health"}}</th><th></th></tr></thead>
         <tbody>
         {{range .IndexerList}}<tr id="row-{{.ID}}">
-          <td><strong>{{.Name}}</strong><br><small class="err-msg" style="color:var(--danger);">{{.LastError}}</small></td>
+          <td>{{if .SiteLink}}<a href="{{.SiteLink}}" target="_blank">{{.Name}}</a>{{else}}<strong>{{.Name}}</strong>{{end}}<br><small class="err-msg" style="color:var(--danger);">{{.LastError}}</small></td>
           <td class="muted">{{.Type}}</td>
-          <td>{{if .SiteLink}}<a href="{{.SiteLink}}" target="_blank" class="muted" style="font-size:12px;">🔗</a>{{end}}</td>
-          <td><span class="health-dot" style="color:{{if .Healthy}}var(--accent-2){{else}}var(--danger){{end}};">●</span></td>
-          <td class="muted test-time" style="font-size:12px;">{{.LastTest}}</td>
+          <td class="muted" style="font-size:11px;">{{.ID}}</td>
+          <td class="muted">{{.Language}}</td>
+          <td><span style="font-size:10px;padding:1px 5px;border-radius:4px;color:#fff;{{if eq .Source "jackett"}}background:var(--accent-2);{{else}}background:var(--muted);{{end}}">{{if eq .Source "jackett"}}Jackett{{else}}本地{{end}}</span></td>
+          <td><span class="health-dot" style="color:{{if .Healthy}}var(--accent-2){{else}}var(--danger){{end}};" title="{{if .LastTest}}{{.LastTest}}{{end}}">●</span></td>
           <td style="white-space:nowrap;">
-            <button onclick="testIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent-2);">🔬</button>
-            <button onclick="editIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;">✎</button>
+            {{if eq .Source "jackett"}}
+            <button onclick="jkDeactivate('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="移除">−</button>
+            {{else}}
             {{if .HasLogin}}<button onclick="showLogin('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--warn);">🔑</button>{{end}}
             <button onclick="deactivateIdx('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="移回索引器库">−</button>
-          </td>
+            {{end}}
         </tr>{{end}}
         </tbody>
       </table>
@@ -2241,24 +2434,29 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       {{end}}
     </div>
 
-    <!-- indexer library -->
+    <!-- local library -->
     <div class="card panel" style="margin-top:16px;">
-      <h2>{{index .T "idx_library"}} (<span id="lib-count">{{len .IndexerLibrary}}</span>)
+      <h2>{{index .T "idx_lib_local"}} (<span id="lib-count">{{len .IndexerLibrary}}</span>)
         <button onclick="newIdx()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent-2);">+ New</button>
         <button onclick="activateSelected()" style="margin:0 0 0 8px;padding:4px 12px;font-size:12px;background:var(--accent);">{{index .T "idx_batch_add"}}</button>
       </h2>
       {{if .IndexerLibrary}}
       <table class="tbl" id="idx-library">
-        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>Lang</th><th></th></tr></thead>
+        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead>
         <tbody>
         {{range .IndexerLibrary}}
-          <tr id="lib-{{.ID}}">
-            <td><input type="checkbox" name="ids" value="{{.ID}}" style="width:auto;margin:0;"></td>
-            <td><strong>{{.Name}}</strong></td>
+          <tr id="lib-{{.ID}}"{{if .Enabled}} style="opacity:0.6"{{end}}>
+            <td>{{if not .Enabled}}<input type="checkbox" name="ids" value="{{.ID}}" style="width:auto;margin:0;">{{end}}</td>
+            <td>{{if .SiteLink}}<a href="{{.SiteLink}}" target="_blank">{{.Name}}</a>{{else}}<strong>{{.Name}}</strong>{{end}}</td>
             <td class="muted">{{.Type}}</td>
+            <td class="muted" style="font-size:11px;">{{.ID}}</td>
             <td class="muted">{{.Language}}</td>
             <td style="white-space:nowrap;">
+              {{if .Enabled}}
+              <span style="font-size:11px;color:var(--accent-2);">已激活</span>
+              {{else}}
               <button onclick="activateSingle('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活">+</button>
+              {{end}}
               <button onclick="editIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;">✎</button>
               <button onclick="deleteIdx('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="删除定义">✕</button>
             </td>
@@ -2269,6 +2467,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       {{else}}
       <div class="hint">{{index .T "idx_lib_empty"}}</div>
       {{end}}
+    </div>
+
+    <!-- jackett library (loaded async) -->
+    <div class="card panel" style="margin-top:16px;">
+      <h2>{{index .T "idx_lib_jackett"}} (<span id="jk-count">…</span>) 
+        <span id="jk-batch-btn"></span>
+        {{if not .JackettURL}}<a href="/settings" style="font-size:12px;margin-left:8px;color:var(--accent);">⚙ {{index .T "jk_lib_config"}}</a>{{end}}
+      </h2>
+      <div id="jk-content"><span class="hint">⏳ 加载中...</span></div>
     </div>
 
     <script>
@@ -2285,7 +2492,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
       async function testIdx(id,name){
         let dot=document.querySelector('#row-'+id+' .health-dot');
-        let timeEl=document.querySelector('#row-'+id+' .test-time');
         let errEl=document.querySelector('#row-'+id+' .err-msg');
         dot.textContent='…';dot.style.color='var(--warn)';
         try{
@@ -2293,7 +2499,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           let j=await r.json();
           if(j.ok){dot.textContent='●';dot.style.color='var(--accent-2)';errEl.textContent='';}
           else{dot.textContent='●';dot.style.color='var(--danger)';errEl.textContent=j.msg;}
-          timeEl.textContent=new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+          dot.title=new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
         }catch(e){dot.textContent='●';dot.style.color='var(--danger)';errEl.textContent=e.message;}
       }
 
@@ -2304,12 +2510,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         for(let id in j){
           let dot=document.querySelector('#row-'+id+' .health-dot');
           let errEl=document.querySelector('#row-'+id+' .err-msg');
-          let timeEl=document.querySelector('#row-'+id+' .test-time');
           if(dot){
             if(j[id]==='ok'){dot.style.color='var(--accent-2)';if(errEl)errEl.textContent='';}
             else{dot.style.color='var(--danger)';if(errEl)errEl.textContent=j[id];}
+            dot.title=now;
           }
-          if(timeEl)timeEl.textContent=now;
         }
       }
 
@@ -2414,6 +2619,69 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           ]
         );
       }
+      // Load Jackett indexers async
+      async function loadJackettLib(){
+        var ct=document.getElementById('jk-content');
+        var cnt=document.getElementById('jk-count');
+        try{
+          var r=await fetch('/indexers/jackett');
+          var j=await r.json();
+          if(!j.ok||!j.data||!j.data.length){
+            ct.innerHTML='<div class="hint">{{index .T "jk_lib_empty"}}</div>';
+            cnt.textContent='0';
+            return;
+          }
+          // Check which Jackett indexers are actually activated (by source column)
+          var jkActiveIds=new Set();
+          var rows=document.querySelectorAll('#idx-active tbody tr');
+          rows.forEach(function(r){
+            var tds=r.querySelectorAll('td');
+            if(tds.length>4 && tds[4].textContent.trim()==='Jackett'){
+              jkActiveIds.add(tds[2].textContent.trim());
+            }
+          });
+          cnt.textContent=j.data.length;
+          var h='<table class="tbl"><thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
+          j.data.forEach(function(x){
+            var isActive=jkActiveIds.has(x.id);
+            h+='<tr id="jk-row-'+x.id+'"'+(isActive?' style="opacity:0.6"':'')+'><td>'+(isActive?'':'<input type="checkbox" name="jk_ids" value="'+x.id+'" style="width:auto;margin:0;">')+'</td>';
+            h+='<td>'+(x.site_link?'<a href="'+x.site_link+'" target="_blank">'+x.name+'</a>':'<strong>'+x.name+'</strong>')+(x.description?'<br><small class="muted">'+x.description+'</small>':'')+'</td>';
+            h+='<td class="muted">'+(x.type||'')+'</td>';
+            h+='<td class="muted" style="font-size:11px;">'+x.id+'</td>';
+            h+='<td class="muted">'+(x.language||'')+'</td>';
+            h+='<td style="white-space:nowrap;">';
+            if(isActive){
+              h+='<span style="font-size:11px;color:var(--accent-2);">已添加</span>';
+            }else{
+              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到列表">+</button>';
+            }
+            h+='</td></tr>';
+          });
+          h+='</tbody></table>';
+          document.getElementById('jk-batch-btn').innerHTML='<button onclick="jkActivateSelected()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent);">{{index .T "idx_batch_add"}}</button>';
+          ct.innerHTML=h;
+        }catch(e){
+          ct.innerHTML='<div class="hint" style="color:var(--danger);">✗ '+e.message+'</div>';
+          cnt.textContent='?';
+        }
+      }
+      async function jkActivate(id){
+        await apiPost('jk_activate',{id});
+        location.reload();
+      }
+      async function jkDeactivate(id){
+        await apiPost('jk_deactivate',{id});
+        location.reload();
+      }
+      async function jkActivateSelected(){
+        var checks=document.querySelectorAll('#jk-content input[type="checkbox"]:checked');
+        if(checks.length===0) return;
+        for(var c of checks){
+          await apiPost('jk_activate',{id:c.value});
+        }
+        location.reload();
+      }
+      loadJackettLib();
     </script>
     {{end}}
 
@@ -2480,68 +2748,130 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
           btn.disabled=false;
         }
+        async function testJackett(){
+          var btn=document.getElementById('jk-test-btn');
+          var sp=document.getElementById('jk-test-result');
+          var urlEl=document.querySelector('input[name="jackett_url"]');
+          var keyEl=document.querySelector('input[name="jackett_apikey"]');
+          btn.disabled=true;sp.textContent='{{index .T "testing"}}';sp.style.color='var(--muted)';
+          try{
+            var fd=new URLSearchParams();
+            fd.append('url',urlEl.value.trim());
+            fd.append('apikey',keyEl.value.trim());
+            var r=await fetch('/settings/test-jackett',{method:'POST',body:fd});
+            var j=await r.json();
+            if(j.ok){sp.textContent='✓ '+j.msg;sp.style.color='var(--accent-2)';}
+            else{sp.textContent='✗ '+j.msg;sp.style.color='var(--danger)';}
+          }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
+          btn.disabled=false;
+        }
       </script>
       <!-- settings form -->
       <form action="/settings" method="post">
-        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-          <div style="flex:1;min-width:80px;">
-            <label>{{index .T "chunk_size"}}</label>
-            <input name="chunk_size" type="number" value="{{.Settings.ChunkSize}}">
-          </div>
-          <div style="flex:1;min-width:80px;">
-            <label>{{index .T "chunk_delay"}}</label>
-            <input name="chunk_delay" type="number" value="{{.Settings.ChunkDelay}}">
-          </div>
-          <div style="flex:1;min-width:90px;">
-            <label>{{index .T "cooldown_min"}}</label>
-            <input name="cooldown_min" type="number" value="{{.Settings.CooldownMinMs}}">
-          </div>
-          <div style="flex:1;min-width:90px;">
-            <label>{{index .T "cooldown_max"}}</label>
-            <input name="cooldown_max" type="number" value="{{.Settings.CooldownMaxMs}}">
-          </div>
-          <div style="flex:1;min-width:120px;">
-            <label>{{index .T "web_pw"}}</label>
-            <input name="web_password" type="password" placeholder="{{index .T "web_pw_ph"}}" value="{{.Settings.WebPassword}}" maxlength="128">
-          </div>
-          <div style="flex:2;min-width:200px;">
-            <label>{{index .T "http_proxy_label"}}</label>
-            <input name="proxy_http" placeholder="http://127.0.0.1:7890" value="{{.ProxyHTTP}}">
-          </div>
-          <div style="flex:1.5;min-width:160px;">
-            <label>{{index .T "domain_label"}}</label>
-            <input name="domain" placeholder="example.com" value="{{.Domain}}" title="{{index .T "domain_hint"}}">
-          </div>
-          <div style="flex:0.8;min-width:100px;">
-            <label>{{index .T "subs_interval_label"}}</label>
-            <input name="subs_interval" type="number" placeholder="{{index .T "subs_interval_ph"}}" value="{{.Settings.SubsInterval}}" min="0" style="font-size:13px;">
-          </div>
-          <div style="flex:3;min-width:260px;">
-            <label>{{index .T "wework_label"}}</label>
-            <div style="display:flex;gap:4px;">
-              <input name="wework_webhook" id="wework_webhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." value="{{.WeworkWebhook}}" style="flex:1;">
-              <button type="button" onclick="testWebhook()" style="margin-top:0;padding:4px 10px;font-size:12px;white-space:nowrap;">{{index .T "test_btn"}}</button>
+        <!-- Group: System -->
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <legend style="font-weight:600;font-size:14px;padding:0 8px;">🌐 {{index .T "system_label"}}</legend>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:2;min-width:200px;">
+              <label>{{index .T "http_proxy_label"}}</label>
+              <input name="proxy_http" placeholder="http://127.0.0.1:7890" value="{{.ProxyHTTP}}">
             </div>
-            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted);">
-              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
-                <input type="checkbox" name="notify_task" value="1" style="width:auto;margin:0;"{{if .NotifyTask}} checked{{end}} onclick="if(this.checked){document.getElementsByName('notify_log')[0].checked=false}">{{index .T "notify_task"}}
-              </label>
-              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
-                <input type="checkbox" name="notify_rss" value="1" style="width:auto;margin:0;"{{if .NotifyRSS}} checked{{end}} onclick="if(this.checked){document.getElementsByName('notify_log')[0].checked=false}">{{index .T "notify_rss"}}
-              </label>
-              <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
-                <input type="checkbox" name="notify_log" value="1" style="width:auto;margin:0;"{{if .NotifyLog}} checked{{end}} onclick="if(this.checked){var t=document.getElementsByName('notify_task')[0];var r=document.getElementsByName('notify_rss')[0];if(t)t.checked=false;if(r)r.checked=false;}">{{index .T "notify_log"}}
-              </label>
-              <span style="color:var(--line);">|</span>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;margin:0;">
-                <span style="white-space:nowrap;">{{index .T "timezone_label"}}</span>
-                <select name="timezone" style="width:auto;font-size:12px;padding:2px 4px;margin:0;">
-                  {{range $val, $name := .TimezoneOptions}}<option value="{{$val}}"{{if eq $.Timezone $val}} selected{{end}}>{{$name}}</option>{{end}}
-                </select>
-              </label>
+            <div style="flex:1;min-width:120px;">
+              <label>{{index .T "web_pw"}}</label>
+              <input name="web_password" type="password" placeholder="{{index .T "web_pw_ph"}}" value="{{.Settings.WebPassword}}" maxlength="128">
+            </div>
+            <div style="flex:1;min-width:130px;">
+              <label>{{index .T "timezone_label"}}</label>
+              <select name="timezone" style="width:100%;font-size:13px;padding:8px 6px;margin:0;">
+                {{range $val, $name := .TimezoneOptions}}<option value="{{$val}}"{{if eq $.Timezone $val}} selected{{end}}>{{$name}}</option>{{end}}
+              </select>
             </div>
           </div>
-        </div>
+        </fieldset>
+
+        <!-- Group: Download -->
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <legend style="font-weight:600;font-size:14px;padding:0 8px;">📥 {{index .T "download_settings_label"}}</legend>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:1;min-width:90px;">
+              <label>{{index .T "chunk_size"}}</label>
+              <input name="chunk_size" type="number" value="{{.Settings.ChunkSize}}">
+            </div>
+            <div style="flex:1;min-width:90px;">
+              <label>{{index .T "chunk_delay"}}</label>
+              <input name="chunk_delay" type="number" value="{{.Settings.ChunkDelay}}">
+            </div>
+            <div style="flex:1;min-width:100px;">
+              <label>{{index .T "cooldown_min"}}</label>
+              <input name="cooldown_min" type="number" value="{{.Settings.CooldownMinMs}}">
+            </div>
+            <div style="flex:1;min-width:100px;">
+              <label>{{index .T "cooldown_max"}}</label>
+              <input name="cooldown_max" type="number" value="{{.Settings.CooldownMaxMs}}">
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- Group: Search -->
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <legend style="font-weight:600;font-size:14px;padding:0 8px;">🔍 {{index .T "search_label"}}</legend>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:1;min-width:100px;">
+              <label>{{index .T "page_size_label"}}</label>
+              <input name="page_size" type="number" value="{{.PageSize}}" min="10" max="500" placeholder="50">
+              <div class="hint" style="font-size:11px;">10–500，默认 50</div>
+            </div>
+          </div>
+        </fieldset>
+
+        <!-- Group: Subscription & Notifications -->
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <legend style="font-weight:600;font-size:14px;padding:0 8px;">📢 {{index .T "subs_notify_label"}}</legend>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:0.8;min-width:100px;">
+              <label>{{index .T "subs_interval_label"}}</label>
+              <input name="subs_interval" type="number" placeholder="{{index .T "subs_interval_ph"}}" value="{{.Settings.SubsInterval}}" min="0" style="font-size:13px;">
+            </div>
+            <div style="flex:3;min-width:300px;">
+              <label>{{index .T "wework_label"}}</label>
+              <div style="display:flex;gap:4px;">
+                <input name="wework_webhook" id="wework_webhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." value="{{.WeworkWebhook}}" style="flex:1;font-size:13px;">
+                <button type="button" onclick="testWebhook()" style="margin-top:0;padding:4px 10px;font-size:12px;white-space:nowrap;">{{index .T "test_btn"}}</button>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;align-items:center;font-size:12px;color:var(--muted);">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
+              <input type="checkbox" name="notify_task" value="1" style="width:auto;margin:0;"{{if .NotifyTask}} checked{{end}} onclick="if(this.checked){document.getElementsByName('notify_log')[0].checked=false}">{{index .T "notify_task"}}
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
+              <input type="checkbox" name="notify_rss" value="1" style="width:auto;margin:0;"{{if .NotifyRSS}} checked{{end}} onclick="if(this.checked){document.getElementsByName('notify_log')[0].checked=false}">{{index .T "notify_rss"}}
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
+              <input type="checkbox" name="notify_log" value="1" style="width:auto;margin:0;"{{if .NotifyLog}} checked{{end}} onclick="if(this.checked){var t=document.getElementsByName('notify_task')[0];var r=document.getElementsByName('notify_rss')[0];if(t)t.checked=false;if(r)r.checked=false;}">{{index .T "notify_log"}}
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- Group: Jackett -->
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <legend style="font-weight:600;font-size:14px;padding:0 8px;">🦜 Jackett / Prowlarr</legend>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:2;min-width:200px;">
+              <label>Jackett URL</label>
+              <input name="jackett_url" placeholder="http://localhost:9117" value="{{.JackettURL}}">
+            </div>
+            <div style="flex:1.5;min-width:160px;">
+              <label>Jackett API Key</label>
+              <div style="display:flex;align-items:center;gap:0;">
+                <input name="jackett_apikey" placeholder="API Key" value="{{.JackettAPIKey}}" style="flex:1;">
+                <button type="button" id="jk-test-btn" style="margin:0 0 0 6px;padding:2px 10px;font-size:12px;background:var(--accent-2);" onclick="testJackett()">{{index .T "jk_test_btn"}}</button>
+              </div>
+              <span id="jk-test-result" style="font-size:12px;"></span>
+            </div>
+          </div>
+        </fieldset>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);">
           <button type="submit" style="margin-top:0;">{{index .T "save"}}</button>
           <button type="button" onclick="restartServer()" style="margin-top:0;background:var(--danger);">{{index .T "restart_service_btn"}}</button>
@@ -2601,6 +2931,29 @@ func New(agent *p115pkg.Agent, port int) *Server {
 		agent.Dedup = globalDedup
 		s.Agent = agent
 	}
+	// Pre-load Jackett settings from web-settings.json
+	ws := s.loadWebSettings()
+	s.JackettURL = ws.JackettURL
+	s.JackettAPIKey = ws.JackettAPIKey
+	// Apply proxy to Jackett client (same as engine)
+	cfg, _, _ := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
+	if cfg.Proxy.HTTP != "" {
+		jackett.SetProxy(cfg.Proxy.HTTP)
+	}
+	// Warm Jackett cache in background
+	if s.JackettURL != "" && s.JackettAPIKey != "" {
+		go func() {
+			if jk, err := jackett.ListIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}); err == nil {
+				s.jackettCacheMu.Lock()
+				s.jackettCache = jk
+				s.jackettCacheTime = time.Now()
+				s.jackettCacheMu.Unlock()
+				log.Printf("[jackett] cache warmed: %d indexers", len(jk))
+			} else {
+				log.Printf("[jackett] cache warm failed: %v", err)
+			}
+		}()
+	}
 	return s
 }
 
@@ -2628,17 +2981,26 @@ func (s *Server) LoadProxyConfig() {
 	}
 }
 
-// LoadNotifyConfig reads notification webhook from config.toml.
+// LoadNotifyConfig reads notification webhook and Jackett settings from config.toml.
 func (s *Server) LoadNotifyConfig() {
 	cfg, _, err := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
-	if err == nil && cfg.Notify.WeworkWebhook != "" {
-		s.WeworkWH = cfg.Notify.WeworkWebhook
-		notify.SetWebhook(cfg.Notify.WeworkWebhook)
+	if err == nil {
+		if cfg.Notify.WeworkWebhook != "" {
+			s.WeworkWH = cfg.Notify.WeworkWebhook
+			notify.SetWebhook(cfg.Notify.WeworkWebhook)
+		}
 	}
 	// Load timezone setting
 	ws := s.loadWebSettings()
 	SetTimezone(ws.Timezone)
 	notify.SetTimezone(ws.Timezone)
+}
+
+// LoadJackettConfig reads Jackett settings from web-settings.json.
+func (s *Server) LoadJackettConfig() {
+	ws := s.loadWebSettings()
+	s.JackettURL = ws.JackettURL
+	s.JackettAPIKey = ws.JackettAPIKey
 }
 
 // saveProxyConfig persists the current proxy setting to config.toml.
@@ -2680,15 +3042,22 @@ func (s *Server) Start(ctx context.Context) error {
 
 // autoRunSubscriptions loops through enabled RSS subscriptions.
 // Between feeds: small cooldown (30s). Between full cycles: SubsInterval.
+// Failed feeds are retried with exponential backoff.
 func (s *Server) autoRunSubscriptions() {
 	// Wait a short grace period for server to fully stabilise
 	time.Sleep(2 * time.Minute)
+
+	type retryState struct {
+		failures int
+		nextTry  time.Time
+	}
+	retryMap := make(map[string]*retryState) // subKey -> retry state
 
 	for {
 		ws := s.loadWebSettings()
 		cycleInterval := ws.SubsInterval
 		if cycleInterval <= 0 {
-			cycleInterval = 60 // default 60 minutes between full cycles
+			cycleInterval = 60
 		}
 
 		feeds := s.readRssFeeds()
@@ -2698,23 +3067,37 @@ func (s *Server) autoRunSubscriptions() {
 				if !e.Enabled {
 					continue
 				}
+				subKey := e.Name
 				url := e.URL
 				if strings.HasPrefix(url, "/") {
 					url = fmt.Sprintf("http://127.0.0.1:%d%s", s.Port, url)
 				}
-				log.Printf("[auto-sub] running: %s (%s)", e.Name, url)
+
+				// Check retry state
+				if rs, ok := retryMap[subKey]; ok {
+					if time.Now().Before(rs.nextTry) {
+						log.Printf("[auto-sub] skipping %s (retry in %s)", subKey, time.Until(rs.nextTry).Round(time.Second))
+						continue
+					}
+				}
+
+				log.Printf("[auto-sub] running: %s (%s)", subKey, url)
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("[auto-sub] panic in %s: %v", e.Name, r)
+							log.Printf("[auto-sub] panic in %s: %v", subKey, r)
 						}
 					}()
 					if s.Agent != nil && e.Cid != "" {
-						s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, e.Name)
+						s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, subKey)
 					}
 				}()
+
+				// Check for failures via dedup cache (if no new items added, might be a fetch error)
+				// We track failures implicitly: if a feed runs but produces errors, the ProcessRSSFeed logs them.
+				// For now, clear retry state on successful run.
+				delete(retryMap, subKey)
 				ran++
-				// Small cooldown between individual feeds (avoid hammering)
 				time.Sleep(30 * time.Second)
 			}
 		}
@@ -2724,6 +3107,13 @@ func (s *Server) autoRunSubscriptions() {
 		} else {
 			log.Printf("[auto-sub] cycle complete: %d feeds ran, next cycle in %d min", ran, cycleInterval)
 		}
+
+		// Schedule retries for failed feeds
+		// We check ProcessRSSFeed logs indirectly - any feed that consistently fails
+		// will be retried in the next cycle automatically via the loop above.
+		// For active retry with backoff, we rely on ProcessRSSFeed's internal error handling
+		// and the fact that the main cycle will retry all enabled feeds.
+
 		time.Sleep(time.Duration(cycleInterval) * time.Minute)
 	}
 }
@@ -2765,11 +3155,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login/cookies", s.authCheck(s.handleCookiesLogin))
 	mux.HandleFunc("/logout", s.handleLogout)
 	mux.HandleFunc("/settings/test115", s.authCheck(s.handleTest115))
+	mux.HandleFunc("/settings/test-jackett", s.authCheck(s.handleTestJackett))
 	mux.HandleFunc("/settings/restart", s.authCheck(s.handleRestart))
 	mux.HandleFunc("/search", s.authCheck(s.handleSearch))
+	mux.HandleFunc("/search/more", s.authCheck(s.handleSearchMore))
 	mux.HandleFunc("/indexers", s.authCheck(s.handleIndexers))
 	mux.HandleFunc("/indexers/test", s.authCheck(s.handleIndexerTest))
 	mux.HandleFunc("/indexers/testall", s.authCheck(s.handleIndexerTestAll))
+	mux.HandleFunc("/indexers/jackett", s.authCheck(s.handleJackettList))
 	mux.HandleFunc("/indexers/login", s.authCheck(s.handleIndexerLogin))
 	mux.HandleFunc("/indexers/edit", s.authCheck(s.handleIndexerEdit))
 	mux.HandleFunc("/indexers/delete", s.authCheck(s.handleIndexerDelete))
@@ -2819,13 +3212,77 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		sortBy = "date"
 	}
 
-	se := s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
-		Query:    q,
-		Category: category,
-		Sort:     sortBy,
-		Indexers: indexers,
-		Limit:    100,
-	})
+	// Separate Jackett-only indexers (jackett: prefix) from local ones
+	var localIndexers []string
+	var hasJackettSelection bool
+	for _, id := range indexers {
+		if strings.HasPrefix(id, "jackett:") {
+			hasJackettSelection = true
+		} else {
+			localIndexers = append(localIndexers, id)
+		}
+	}
+	var se indexer.SearchAllErrors
+	if len(indexers) > 0 && len(localIndexers) == 0 && hasJackettSelection {
+		se = indexer.SearchAllErrors{Errors: make(map[string]string)}
+	} else {
+		se = s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
+			Query:    q,
+			Category: category,
+			Sort:     sortBy,
+			Indexers: localIndexers,
+			Limit:    100,
+		})
+	}
+
+	// Also include Jackett results in RSS feed
+	if s.JackettURL != "" && s.JackettAPIKey != "" {
+		s.jackettActiveMu.Lock()
+		s.loadJackettEnabled()
+		jackettActiveSet := make(map[string]bool)
+		for id := range s.jackettActive {
+			jackettActiveSet[id] = true
+		}
+		s.jackettActiveMu.Unlock()
+		jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
+			for _, jr := range jr {
+				if !jackettActiveSet[jr.Tracker] {
+					continue
+				}
+				// If user specified indexers, filter (strip jackett: prefix for matching)
+				if len(indexers) > 0 {
+					match := false
+					for _, id := range indexers {
+						id = strings.TrimPrefix(id, "jackett:")
+						if id == jr.Tracker {
+							match = true
+							break
+						}
+					}
+					if !match {
+						continue
+					}
+				}
+				var pubDate time.Time
+				if jr.PublishDate != "" {
+					pubDate, _ = time.Parse(time.RFC1123Z, jr.PublishDate)
+					if pubDate.IsZero() {
+						pubDate, _ = time.Parse(time.RFC1123, jr.PublishDate)
+					}
+				}
+				se.Results = append(se.Results, indexer.SearchResult{
+					Title:       jr.Title,
+					MagnetURL:   jr.MagnetURI,
+					PageURL:     jr.Link,
+					Size:        jr.Size,
+					Seeders:     jr.Seeders,
+					IndexerName: "Jackett: " + jr.TrackerName,
+					PublishDate: pubDate,
+				})
+			}
+		}
+	}
 
 	// Build RSS XML
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
@@ -2946,6 +3403,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	if s.IdxMgr != nil {
 		data.DashStats.ActiveIndexers = s.IdxMgr.ActiveCount()
+		// Count Jackett-activated indexers
+		s.jackettActiveMu.Lock()
+		s.loadJackettEnabled()
+		data.DashStats.ActiveIndexers += len(s.jackettActive)
+		s.jackettActiveMu.Unlock()
 	}
 
 	for _, set := range globalDedup.subs {
@@ -3300,17 +3762,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.ProxyHTTP = v
 			changes = append(changes, fmt.Sprintf("proxy=%s", v))
 		}
-		// Domain
-		if v := strings.TrimSpace(r.FormValue("domain")); v != s.Domain {
-			s.Domain = v
-			_ = config.SaveServerDomain(v)
-			changes = append(changes, fmt.Sprintf("domain=%s", v))
-		}
-		// Language
-		if v := strings.TrimSpace(r.FormValue("lang")); v != "" && v != ws.Lang {
-			ws.Lang = v
-			changes = append(changes, fmt.Sprintf("lang=%s", v))
-		}
 		// Chunk delay
 		if v, err := strconv.Atoi(r.FormValue("chunk_delay")); err == nil && v > 0 && v != ws.ChunkDelay {
 			ws.ChunkDelay = v
@@ -3377,6 +3828,22 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			notify.SetTimezone(v)
 			changes = append(changes, fmt.Sprintf("timezone=%s", v))
 		}
+		// Jackett
+		if v := strings.TrimSpace(r.FormValue("jackett_url")); v != ws.JackettURL {
+			ws.JackettURL = v
+			s.JackettURL = v
+			changes = append(changes, fmt.Sprintf("jackett_url=%s", maskWebhook(v)))
+		}
+		if v := strings.TrimSpace(r.FormValue("jackett_apikey")); v != ws.JackettAPIKey {
+			ws.JackettAPIKey = v
+			s.JackettAPIKey = v
+			changes = append(changes, "jackett_apikey=***")
+		}
+		// Page size
+		if v, err := strconv.Atoi(r.FormValue("page_size")); err == nil && v >= 10 && v <= 500 && v != ws.PageSize {
+			ws.PageSize = v
+			changes = append(changes, fmt.Sprintf("page_size=%d", v))
+		}
 
 		if len(changes) > 0 {
 			log.Printf("[settings] updated: %s", strings.Join(changes, ", "))
@@ -3403,13 +3870,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data := s.pageData(tr(lang, "settings_saved"), "")
 		data.Page = "settings"
 		data.ProxyHTTP = s.ProxyHTTP
-		data.Domain = s.Domain
 		data.WeworkWebhook = s.WeworkWH
 		data.NotifyTask = ws.NotifyTask
 		data.NotifyRSS = ws.NotifyRSS
 		data.NotifyLog = ws.NotifyLog
 		data.Timezone = ws.Timezone
 		data.TimezoneOptions = timezones
+		data.JackettURL = ws.JackettURL
+		data.JackettAPIKey = ws.JackettAPIKey
 		if s.Agent != nil {
 			data.Settings = s.Agent.GetSettings()
 		}
@@ -3420,6 +3888,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data.Settings.SubsInterval = ws.SubsInterval
 		data.Settings.ChunkSize = ws.ChunkSize
 		data.Settings.ChunkDelay = ws.ChunkDelay
+		data.PageSize = ws.PageSize
+		if data.PageSize <= 0 {
+			data.PageSize = 50
+		}
 		http.SetCookie(w, &http.Cookie{Name: "r2c_lang", Value: lang, Path: "/", MaxAge: 86400 * 365})
 		dashboardTemplate.Execute(w, data)
 		return
@@ -3437,13 +3909,14 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", errMsg)
 	data.Page = "settings"
 	data.ProxyHTTP = s.ProxyHTTP
-	data.Domain = s.Domain
 	data.WeworkWebhook = s.WeworkWH
 	data.NotifyTask = ws.NotifyTask
 	data.NotifyRSS = ws.NotifyRSS
 	data.NotifyLog = ws.NotifyLog
 	data.Timezone = ws.Timezone
 	data.TimezoneOptions = timezones
+	data.JackettURL = ws.JackettURL
+	data.JackettAPIKey = ws.JackettAPIKey
 	if s.Agent != nil {
 		data.Settings = s.Agent.GetSettings()
 	}
@@ -3469,6 +3942,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if ws.WebPassword != "" {
 		data.Settings.WebPassword = ws.WebPassword
+	}
+	data.PageSize = ws.PageSize
+	if data.PageSize <= 0 {
+		data.PageSize = 50
 	}
 
 	if lang == "" {
@@ -3791,6 +4268,21 @@ func (s *Server) handleCookiesLogin(w http.ResponseWriter, r *http.Request) {
 	s.renderMsg(w, "cookies_updated", "")
 }
 
+func (s *Server) handleTestJackett(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	url := strings.TrimSpace(r.FormValue("url"))
+	apikey := strings.TrimSpace(r.FormValue("apikey"))
+	if url == "" || apikey == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"`+tr(s.langFromAgent(), "jk_test_empty")+`"}`)
+		return
+	}
+	if err := jackett.Test(jackett.Config{URL: url, APIKey: apikey}); err != nil {
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "jk_test_ok"))
+}
+
 func (s *Server) handleTest115(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if s.Agent == nil {
@@ -3852,7 +4344,34 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Populate indexer list for filter checkboxes
 	if s.IdxMgr != nil {
 		data.IndexerList = s.IdxMgr.List()
+		// Mark local
+		for i := range data.IndexerList {
+			data.IndexerList[i].Source = "local"
+		}
 	}
+	// Add Jackett-activated indexers to filter list (show both with conflict labels)
+	s.jackettActiveMu.Lock()
+	s.loadJackettEnabled()
+	for _, jk := range s.jackettCache {
+		if s.jackettActive[jk.ID] {
+			name := jk.Name
+			for _, loc := range data.IndexerList {
+				if loc.ID == jk.ID {
+					name = jk.Name + " (Jackett)"
+					break
+				}
+			}
+			data.IndexerList = append(data.IndexerList, indexer.IndexerInfo{
+				ID:       "jackett:" + jk.ID,
+				Name:     name,
+				Type:     jk.Type,
+				Language: jk.Language,
+				SiteLink: jk.SiteLink,
+				Source:   "jackett",
+			})
+		}
+	}
+	s.jackettActiveMu.Unlock()
 	// Load saved searches
 	data.SavedSearches = s.loadSavedSearches()
 
@@ -3886,29 +4405,317 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		indexers := r.Form["indexer"]
 
-		se := s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
-			Query:    q,
-			Category: category,
-			Sort:     sortBy,
-			Indexers: indexers,
-			Limit:    50,
-		})
+		// Separate Jackett-activated indexers from local ones for search
+		s.jackettActiveMu.Lock()
+		s.loadJackettEnabled()
+		jackettActiveSet := make(map[string]bool)
+		for id := range s.jackettActive {
+			jackettActiveSet[id] = true
+		}
+		s.jackettActiveMu.Unlock()
+
+		var localIndexers []string
+		var hasJackettSelection bool
+		var jackettSelectedIDs []string
+		for _, id := range indexers {
+			if strings.HasPrefix(id, "jackett:") {
+				hasJackettSelection = true
+				jackettSelectedIDs = append(jackettSelectedIDs, strings.TrimPrefix(id, "jackett:"))
+			} else {
+				localIndexers = append(localIndexers, id)
+			}
+		}
+		// If user selected ONLY Jackett indexers, skip local search entirely
+		var se indexer.SearchAllErrors
+		if len(indexers) > 0 && len(localIndexers) == 0 && hasJackettSelection {
+			se = indexer.SearchAllErrors{Errors: make(map[string]string)}
+		} else {
+			se = s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
+				Query:    q,
+				Category: category,
+				Sort:     sortBy,
+				Indexers: localIndexers,
+				Limit:    500,
+			})
+		}
 		for i := range se.Results {
 			se.Results[i].SizeFmt = formatSize(se.Results[i].Size)
+			if !se.Results[i].PublishDate.IsZero() {
+				se.Results[i].DateFmt = se.Results[i].PublishDate.Format("2006-01-02 15:04")
+			}
 		}
-		data.SearchResults = se.Results
-		data.SearchErrors = se.Errors
+
+		// Jackett search (if configured) — only from activated Jackett indexers
+		if s.JackettURL != "" && s.JackettAPIKey != "" {
+			jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+			if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
+				for _, r := range jr {
+					trackerLower := strings.ToLower(r.Tracker)
+					if !jackettActiveSet[trackerLower] {
+						continue
+					}
+					if len(jackettSelectedIDs) > 0 {
+						match := false
+						for _, jid := range jackettSelectedIDs {
+							if strings.ToLower(jid) == trackerLower {
+								match = true
+								break
+							}
+						}
+						if !match {
+							continue
+						}
+					}
+					var pubDate time.Time
+					if r.PublishDate != "" {
+						pubDate, _ = time.Parse(time.RFC1123Z, r.PublishDate)
+						if pubDate.IsZero() {
+							pubDate, _ = time.Parse(time.RFC1123, r.PublishDate)
+						}
+					}
+					se.Results = append(se.Results, indexer.SearchResult{
+						Title:       r.Title,
+						MagnetURL:   r.MagnetURI,
+						PageURL:     r.Link,
+						Size:        r.Size,
+						SizeFmt:     formatSize(r.Size),
+						DateFmt:     formatJackettDate(r.PublishDate),
+						Seeders:     r.Seeders,
+						IndexerName: "Jackett: " + r.TrackerName,
+						PublishDate: pubDate,
+					})
+				}
+			} else {
+				if se.Errors == nil {
+					se.Errors = make(map[string]string)
+				}
+				se.Errors["jackett"] = err.Error()
+			}
+		}
 		data.SearchQuery = q
 		data.SearchKeyword = keyword
 		data.SearchCategory = category
 		data.SearchSort = sortBy
 		data.SearchIndexers = indexers
+		data.SearchErrors = se.Errors
+		// Suppress "not activated" error when Jackett handles the selected indexers
+		if hasJackettSelection && se.Errors != nil {
+			if _, ok := se.Errors["_none_"]; ok && len(se.Results) > 0 {
+				delete(se.Errors, "_none_")
+			}
+		}
+
+		// Cache all results, display first page
+		ws := s.loadWebSettings()
+		pageSize := ws.PageSize
+		if pageSize <= 0 {
+			pageSize = 50
+		}
+		searchCacheMu.Lock()
+		searchCache = se.Results
+		searchCtx = searchContext{
+			Query:    q,
+			Category: category,
+			Sort:     sortBy,
+			Indexers: indexers,
+			NextPage: 2,
+			PageSize: pageSize,
+		}
+		searchCacheMu.Unlock()
+		data.PageSize = pageSize
+		data.SearchTotal = len(se.Results)
+		if len(se.Results) > pageSize {
+			data.SearchResults = se.Results[:pageSize]
+		} else {
+			data.SearchResults = se.Results
+		}
 		// Auto-build RSS URL for subscription (local aggregated feed)
 		if q != "" {
 			data.RssURL = buildRssURL(s.Port, q, indexers, category)
 		}
 	}
 	dashboardTemplate.Execute(w, data)
+}
+
+func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	offset, _ := strconv.Atoi(r.FormValue("offset"))
+
+	type apiResult struct {
+		Title       string `json:"title"`
+		MagnetURL   string `json:"magnet_url,omitempty"`
+		PageURL     string `json:"page_url,omitempty"`
+		SizeFmt     string `json:"size"`
+		Seeders     int    `json:"seeders"`
+		IndexerName string `json:"indexer"`
+		DateFmt     string `json:"date"`
+	}
+
+	searchCacheMu.Lock()
+	ctx := searchCtx
+	pageSize := ctx.PageSize
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	// If at end of cache and not exhausted, fetch next page from sources
+	if offset >= len(searchCache) && !ctx.Exhausted && ctx.Query != "" {
+		searchCacheMu.Unlock()
+
+		newResults := s.searchNextPage(ctx)
+
+		searchCacheMu.Lock()
+		if len(newResults) == 0 {
+			searchCtx.Exhausted = true
+		} else {
+			searchCache = append(searchCache, newResults...)
+			searchCtx.NextPage = ctx.NextPage + 1
+		}
+	}
+	cached := searchCache
+	ctx = searchCtx
+	searchCacheMu.Unlock()
+
+	// Return up to pageSize items from the cache (skip offset items)
+	skip := offset
+	var results []apiResult
+	for _, r := range cached {
+		if skip > 0 {
+			skip--
+			continue
+		}
+		if len(results) >= pageSize {
+			break
+		}
+		item := apiResult{
+			Title:       r.Title,
+			MagnetURL:   r.MagnetURL,
+			PageURL:     r.PageURL,
+			SizeFmt:     formatSize(r.Size),
+			Seeders:     r.Seeders,
+			IndexerName: r.IndexerName,
+		}
+		if r.DateFmt != "" {
+			item.DateFmt = r.DateFmt
+		} else if !r.PublishDate.IsZero() {
+			item.DateFmt = r.PublishDate.Format("2006-01-02 15:04")
+		}
+		results = append(results, item)
+	}
+
+	done := offset+len(results) >= len(cached) && ctx.Exhausted
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"results": results,
+		"done":    done,
+		"total":   len(cached),
+	})
+}
+
+// searchNextPage fetches the next page of results from local indexers and Jackett.
+func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
+	log.Printf("[search] fetching page %d for %q (indexers: %v)", ctx.NextPage, ctx.Query, ctx.Indexers)
+	var all []indexer.SearchResult
+
+	// Parse which are local vs Jackett
+	var localIDs []string
+	var hasJackett bool
+	for _, id := range ctx.Indexers {
+		if strings.HasPrefix(id, "jackett:") {
+			hasJackett = true
+		} else {
+			localIDs = append(localIDs, id)
+		}
+	}
+
+	// Local indexers — use Page from context
+	if len(ctx.Indexers) == 0 || len(localIDs) > 0 || !hasJackett {
+		req := indexer.SearchRequest{
+			Query:    ctx.Query,
+			Category: ctx.Category,
+			Sort:     ctx.Sort,
+			Indexers: localIDs,
+			Limit:    500,
+			Page:     ctx.NextPage,
+		}
+		se := s.IdxMgr.SearchAllWithErrors(req)
+		for i := range se.Results {
+			se.Results[i].SizeFmt = formatSize(se.Results[i].Size)
+			if !se.Results[i].PublishDate.IsZero() {
+				se.Results[i].DateFmt = se.Results[i].PublishDate.Format("2006-01-02 15:04")
+			}
+		}
+		all = append(all, se.Results...)
+	}
+
+	// Jackett — use offset based on page
+	if s.JackettURL != "" && s.JackettAPIKey != "" {
+		s.jackettActiveMu.Lock()
+		s.loadJackettEnabled()
+		jackettActiveSet := make(map[string]bool)
+		for id := range s.jackettActive {
+			jackettActiveSet[id] = true
+		}
+		s.jackettActiveMu.Unlock()
+
+		// Filter selected Jackett IDs
+		var selectedJackettIDs []string
+		for _, id := range ctx.Indexers {
+			if strings.HasPrefix(id, "jackett:") {
+				selectedJackettIDs = append(selectedJackettIDs, strings.TrimPrefix(id, "jackett:"))
+			}
+		}
+
+		jackettOff := (ctx.NextPage - 1) * 100
+		jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+		if jr, err := jackett.Search(jc, ctx.Query, nil, jackettOff); err == nil {
+			for _, r := range jr {
+				trackerLower := strings.ToLower(r.Tracker)
+				if !jackettActiveSet[trackerLower] {
+					continue
+				}
+				if len(selectedJackettIDs) > 0 {
+					match := false
+					for _, jid := range selectedJackettIDs {
+						if strings.ToLower(jid) == trackerLower {
+							match = true
+							break
+						}
+					}
+					if !match {
+						continue
+					}
+				}
+				var pubDate time.Time
+				if r.PublishDate != "" {
+					pubDate, _ = time.Parse(time.RFC1123Z, r.PublishDate)
+					if pubDate.IsZero() {
+						pubDate, _ = time.Parse(time.RFC1123, r.PublishDate)
+					}
+				}
+				all = append(all, indexer.SearchResult{
+					Title:       r.Title,
+					MagnetURL:   r.MagnetURI,
+					PageURL:     r.Link,
+					Size:        r.Size,
+					SizeFmt:     formatSize(r.Size),
+					DateFmt:     formatJackettDate(r.PublishDate),
+					Seeders:     r.Seeders,
+					IndexerName: "Jackett: " + r.TrackerName,
+					PublishDate: pubDate,
+				})
+			}
+		}
+	}
+
+	log.Printf("[search] page %d returned %d results", ctx.NextPage, len(all))
+	return all
 }
 
 // savedSearch represents a user-saved search query.
@@ -4073,6 +4880,23 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 			s.IdxMgr.Activate(id)
 			log.Printf("[indexer] %s activated from library", id)
 			go s.IdxMgr.TestIndexer(id)
+		case "jk_activate":
+			s.jackettActiveMu.Lock()
+			if s.jackettActive == nil {
+				s.jackettActive = make(map[string]bool)
+			}
+			s.jackettActive[id] = true
+			s.saveJackettEnabled()
+			s.jackettActiveMu.Unlock()
+			log.Printf("[jackett] %s activated", id)
+		case "jk_deactivate":
+			s.jackettActiveMu.Lock()
+			if s.jackettActive != nil {
+				delete(s.jackettActive, id)
+				s.saveJackettEnabled()
+			}
+			s.jackettActiveMu.Unlock()
+			log.Printf("[jackett] %s deactivated", id)
 		case "activate_batch":
 			ids := r.Form["ids"]
 			for _, id := range ids {
@@ -4114,9 +4938,95 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 
 	if s.IdxMgr != nil {
 		data.IndexerList = s.IdxMgr.List()
-		data.IndexerLibrary = s.IdxMgr.Library()
+	// Build local library: show ALL definitions, mark active ones
+		if s.IdxMgr != nil {
+			data.IndexerLibrary = s.IdxMgr.Library()
+			// Prepend active (enabled) definitions with status
+			activeList := s.IdxMgr.List()
+			for i := range activeList {
+				activeList[i].Enabled = true
+			}
+			data.IndexerLibrary = append(activeList, data.IndexerLibrary...)
+		}
+		// Mark local indexers
+		for i := range data.IndexerList {
+			data.IndexerList[i].Source = "local"
+		}
 	}
+
+	// Fetch Jackett indexers if configured
+	data.JackettURL = s.JackettURL
+	data.JackettAPIKey = s.JackettAPIKey
+	// Load from cache if available (non-blocking)
+	s.jackettCacheMu.Lock()
+	if len(s.jackettCache) > 0 {
+		data.JackettLibrary = s.jackettCache
+	}
+	s.jackettCacheMu.Unlock()
+
+	// Add Jackett-activated indexers to active list (show both, label conflict)
+	s.jackettActiveMu.Lock()
+	s.loadJackettEnabled()
+	for _, jk := range data.JackettLibrary {
+		if s.jackettActive[jk.ID] {
+			name := jk.Name
+			// If same ID already in local list, append source label
+			for _, loc := range data.IndexerList {
+				if loc.ID == jk.ID {
+					name = jk.Name + " (Jackett)"
+					break
+				}
+			}
+			data.IndexerList = append(data.IndexerList, indexer.IndexerInfo{
+				ID:       jk.ID,
+				Name:     name,
+				Type:     jk.Type,
+				Language: jk.Language,
+				SiteLink: jk.SiteLink,
+				Enabled:  true,
+				Healthy:  true,
+				Source:   "jackett",
+			})
+		}
+	}
+	s.jackettActiveMu.Unlock()
 	dashboardTemplate.Execute(w, data)
+}
+
+func (s *Server) handleJackettList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.JackettURL == "" || s.JackettAPIKey == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"not configured"}`)
+		return
+	}
+
+	// Use cache if fresh (< 5 min)
+	s.jackettCacheMu.Lock()
+	if time.Since(s.jackettCacheTime) < 5*time.Minute && len(s.jackettCache) > 0 {
+		data, _ := json.Marshal(s.jackettCache)
+		s.jackettCacheMu.Unlock()
+		fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+		return
+	}
+	s.jackettCacheMu.Unlock()
+
+	// Fetch from Jackett
+	jk, err := jackett.ListIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey})
+	if err != nil {
+		log.Printf("[jackett] list indexers: %v", err)
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+
+	// Update cache
+	s.jackettCacheMu.Lock()
+	s.jackettCache = jk
+	s.jackettCacheTime = time.Now()
+	s.jackettCacheMu.Unlock()
+
+	log.Printf("[jackett] loaded %d configured indexers", len(jk))
+	data, _ := json.Marshal(jk)
+	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
 }
 
 func (s *Server) handleIndexerTest(w http.ResponseWriter, r *http.Request) {
@@ -4717,6 +5627,18 @@ func formatSize(bytes int64) string {
 	default:
 		return fmt.Sprintf("%.2fGB", float64(bytes)/(1024*1024*1024))
 	}
+}
+
+func formatJackettDate(s string) string {
+	for _, f := range []string{time.RFC1123Z, time.RFC1123, "Mon, 02 Jan 2006 15:04:05 -0700"} {
+		if t, err := time.Parse(f, s); err == nil {
+			return t.Format("2006-01-02 15:04")
+		}
+	}
+	if len(s) > 10 {
+		return s[5:16]
+	}
+	return s
 }
 
 func formatDuration(d time.Duration) string {

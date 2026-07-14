@@ -20,8 +20,10 @@ settings: []
 
 search:
   paths:
-    # https://mikanani.me/Home/Search?searchstr=%E5%90%8D%E4%BE%A6%E6%8E%A2%E6%9F%AF%E5%8D%97
-    - path: "Home/{{ if .Keywords }}Search?searchstr={{ .Keywords }}{{ else }}Classic{{ end }}"
+    - path: "Home/Search"
+  inputs:
+    searchstr: "{{ .Keywords }}"
+    page: "{{.Page}}"
 
   rows:
     selector: table.table-striped tbody tr
@@ -49,19 +51,11 @@ search:
         - name: replace
           args: ["今天", "Today"]
         - name: fuzzytime
-    date_year_raw:
-      selector: td:nth-of-type(4)
+    date_raw:
+      selector: td:nth-child(4)
       optional: true
-      filters:
-        - name: regexp
-          args: "(\\d{4}/\\d{1,2}/\\d{1,2}[\\s\\u00A0]+\\d{1,2}:\\d{2})"
-    date_year:
-      text: "{{ if .Result.date_year_raw }}{{ .Result.date_year_raw }} +08:00{{ else }}{{ end }}"
-      filters:
-        - name: dateparse
-          args: "yyyy/MM/dd HH:mm zzz"
     date:
-      text: "{{ if or .Result.date_year .Result.date_day }}{{ or .Result.date_year .Result.date_day }}{{ else }}now{{ end }}"
+      text: "{{ if .Result.date_raw }}{{ .Result.date_raw }} +08:00{{ else if .Result.date_day }}{{ .Result.date_day }}{{ else }}now{{ end }}"
     size:
       selector: td:has(a[data-clipboard-text]) ~ td
     seeders:

@@ -19,7 +19,7 @@ ENV TZ=Asia/Shanghai
 
 WORKDIR /app
 COPY --from=builder /build/pan-fetcher .
-COPY --from=builder /build/config.example.toml ./config.toml
+COPY --from=builder /build/config.toml ./config.toml
 COPY --from=builder /build/indexers/ ./indexers/
 
 VOLUME ["/app/data"]

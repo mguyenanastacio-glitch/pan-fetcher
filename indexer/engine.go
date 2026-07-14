@@ -427,6 +427,7 @@ func (e *Engine) buildSearchURL(def *IndexerDefinition, req SearchRequest) (stri
 	tmplData := map[string]interface{}{
 		"Keywords": req.Query,
 		"Keyword":  req.Query,
+		"Page":     req.Page,
 		"Query": map[string]string{
 			"Keywords": req.Query,
 			"Keyword":  req.Query,
@@ -471,6 +472,10 @@ func (e *Engine) buildSearchURL(def *IndexerDefinition, req SearchRequest) (stri
 					val = v
 				}
 				if val != "" {
+					// Skip page/p param when value is "0" (first page uses no page param)
+					if (k == "page" || k == "p") && val == "0" {
+						continue
+					}
 					params.Set(k, val)
 				}
 			}
@@ -532,48 +537,66 @@ func (e *Engine) parseResults(def *IndexerDefinition, body io.Reader, req Search
 			Category:    "other",
 		}
 
-		// Extract each field
-		if f, ok := def.Search.Fields["title"]; ok {
-			result.Title = extractField(row, f)
+		// Phase 1: extract selector-based fields into a map for template evaluation
+		rawFields := make(map[string]string)
+		for name, f := range def.Search.Fields {
+			if f.Text != "" {
+				continue // defer text-template fields to phase 2
+			}
+			val := extractField(row, f)
+			rawFields[name] = val
+		}
+
+		// Phase 2: evaluate text-template fields against rawFields
+		for name, f := range def.Search.Fields {
+			if f.Text == "" {
+				continue
+			}
+			val := evalFieldText(f.Text.String(), rawFields)
+			for _, flt := range f.Filters {
+				val = applyFilter(val, flt)
+			}
+			rawFields[name] = val
+		}
+
+		// Map extracted fields to result
+		if v, ok := rawFields["title"]; ok && v != "" {
+			result.Title = v
 		}
 		if result.Title == "" {
-			return // skip rows without title
+			return
 		}
 
-		if f, ok := def.Search.Fields["download"]; ok {
-			url := extractField(row, f)
-			if url != "" {
-				// Resolve relative URLs to absolute; conversion to magnet
-				// is deferred until user actually submits the task (via AddMagnetTask).
-				url = resolveURL(def.Links[0], url)
-				result.MagnetURL = url
+		// Map download/magnet to MagnetURL
+		if v, ok := rawFields["download"]; ok && v != "" {
+			result.MagnetURL = resolveURL(def.Links[0], v)
+		}
+		if result.MagnetURL == "" {
+			if v, ok := rawFields["magnet"]; ok && v != "" {
+				result.MagnetURL = v
 			}
 		}
-
-		if f, ok := def.Search.Fields["size"]; ok {
-			result.Size = parseSize(extractField(row, f))
+		if v, ok := rawFields["size"]; ok {
+			result.Size = parseSize(v)
 		}
-
-		if f, ok := def.Search.Fields["seeders"]; ok {
-			result.Seeders, _ = strconv.Atoi(strings.TrimSpace(extractField(row, f)))
+		if v, ok := rawFields["seeders"]; ok {
+			result.Seeders, _ = strconv.Atoi(strings.TrimSpace(v))
 		}
-
-		if f, ok := def.Search.Fields["leechers"]; ok {
-			result.Leechers, _ = strconv.Atoi(strings.TrimSpace(extractField(row, f)))
+		if v, ok := rawFields["leechers"]; ok {
+			result.Leechers, _ = strconv.Atoi(strings.TrimSpace(v))
 		}
-
-		if f, ok := def.Search.Fields["date"]; ok {
-			result.PublishDate = parseDate(extractField(row, f))
+		if v, ok := rawFields["date"]; ok {
+			result.PublishDate = parseDate(v)
 		}
-
-		if f, ok := def.Search.Fields["category"]; ok {
-			result.Category = strings.TrimSpace(extractField(row, f))
+		if v, ok := rawFields["category"]; ok {
+			result.Category = strings.TrimSpace(v)
 		}
-
-		if f, ok := def.Search.Fields["page"]; ok {
-			href := extractField(row, f)
-			if href != "" {
-				result.PageURL = resolveURL(def.Links[0], href)
+		if v, ok := rawFields["page"]; ok && v != "" {
+			result.PageURL = resolveURL(def.Links[0], v)
+		}
+		if result.PageURL == "" {
+			if v, ok := rawFields["details"]; ok && v != "" {
+				result.PageURL = resolveURL(def.Links[0], v)
 			}
 		}
 
@@ -590,22 +613,20 @@ func (e *Engine) parseResults(def *IndexerDefinition, body io.Reader, req Search
 
 // extractField extracts a single field from a DOM row using CSS selector.
 func extractField(row *goquery.Selection, f FieldBlock) string {
-	// Static text takes priority
-	if f.Text != "" {
-		return f.Text.String()
-	}
-	if f.Selector == "" {
-		return ""
-	}
-	sel := row.Find(f.Selector)
-	if sel.Length() == 0 {
-		return ""
-	}
+	// Selector-based extraction
 	var val string
-	if f.Attribute != "" {
-		val, _ = sel.First().Attr(f.Attribute)
-	} else {
-		val = strings.TrimSpace(sel.First().Text())
+	if f.Selector != "" {
+		sel := row.Find(f.Selector)
+		if sel.Length() > 0 {
+			if f.Attribute != "" {
+				val, _ = sel.First().Attr(f.Attribute)
+			} else {
+				val = strings.TrimSpace(sel.First().Text())
+			}
+		}
+	} else if f.Text == "" && len(f.Filters) > 0 {
+		// Filter-only: apply filter to the entire row text
+		val = strings.TrimSpace(row.Text())
 	}
 	// Apply filters
 	for _, flt := range f.Filters {
@@ -614,36 +635,116 @@ func extractField(row *goquery.Selection, f FieldBlock) string {
 	return val
 }
 
+// evalFieldText evaluates a field text template against raw extracted field values.
+func evalFieldText(tmplStr string, rawFields map[string]string) string {
+	data := struct {
+		Result map[string]string
+		Config map[string]bool
+	}{
+		Result: rawFields,
+		Config: map[string]bool{
+			"sonarr_compatibility": false,
+			"prefer_magnet_links":  true,
+		},
+	}
+	tmpl, err := template.New("field").Funcs(template.FuncMap{
+		"or": func(args ...string) string {
+			for _, a := range args {
+				if a != "" {
+					return a
+				}
+			}
+			return ""
+		},
+	}).Option("missingkey=zero").Parse(tmplStr)
+	if err != nil {
+		return tmplStr // return raw text if template parse fails
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return tmplStr
+	}
+	return strings.TrimSpace(buf.String())
+}
+
 // applyFilter transforms a string value using a named filter.
 func applyFilter(val string, f FilterBlock) string {
+	// Evaluate template expressions in args before applying
+	evalArgs := make([]string, len(f.Args))
+	copy(evalArgs, f.Args)
+	for i, a := range evalArgs {
+		if strings.Contains(a, "{{") {
+			evalArgs[i] = evalFilterArgTemplate(a)
+		}
+	}
+
 	switch f.Name {
 	case "trim":
 		return strings.TrimSpace(val)
 	case "replace":
-		if len(f.Args) >= 2 {
-			val = strings.ReplaceAll(val, f.Args[0], f.Args[1])
+		if len(evalArgs) >= 2 {
+			val = strings.ReplaceAll(val, evalArgs[0], evalArgs[1])
 		}
 	case "regexp":
-		if len(f.Args) >= 1 {
-			re, err := regexp.Compile(f.Args[0])
+		if len(evalArgs) >= 1 {
+			re, err := regexp.Compile(evalArgs[0])
 			if err == nil {
 				val = re.FindString(val)
 			}
 		}
+	case "re_replace":
+		if len(evalArgs) >= 2 {
+			re, err := regexp.Compile(evalArgs[0])
+			if err == nil {
+				val = re.ReplaceAllString(val, evalArgs[1])
+			}
+		}
 	case "prefix":
-		if len(f.Args) >= 1 {
-			val = f.Args[0] + val
+		if len(evalArgs) >= 1 {
+			val = evalArgs[0] + val
 		}
 	case "suffix":
-		if len(f.Args) >= 1 {
-			val = val + f.Args[0]
+		if len(evalArgs) >= 1 {
+			val = val + evalArgs[0]
 		}
 	case "lower":
 		return strings.ToLower(val)
 	case "upper":
 		return strings.ToUpper(val)
+	case "urldecode":
+		decoded, err := url.QueryUnescape(val)
+		if err == nil {
+			return decoded
+		}
+	case "split":
+		if len(evalArgs) >= 2 {
+			parts := strings.Split(val, evalArgs[0])
+			idx, err := strconv.Atoi(evalArgs[1])
+			if err == nil && idx >= 0 && idx < len(parts) {
+				return parts[idx]
+			}
+			// Negative index counts from end
+			if err == nil && idx < 0 && -idx <= len(parts) {
+				return parts[len(parts)+idx]
+			}
+		}
+	case "append":
+		if len(evalArgs) >= 1 {
+			return val + evalArgs[0]
+		}
+	case "dateparse":
+		return val
 	}
 	return val
+}
+
+// evalFilterArgTemplate evaluates simple boolean template expressions in filter args.
+func evalFilterArgTemplate(tmplStr string) string {
+	// Simple case: just return the raw string if it's not a recognizable template
+	if !strings.Contains(tmplStr, "{{") {
+		return tmplStr
+	}
+	return tmplStr // Return as-is for now - complex eval deferred
 }
 
 // ------ helpers ------
@@ -675,11 +776,26 @@ func parseSize(s string) int64 {
 
 func parseDate(s string) time.Time {
 	s = strings.TrimSpace(s)
+	if s == "now" || s == "Now" {
+		return time.Now()
+	}
+	// Unix timestamp (seconds since epoch)
+	if ts, err := strconv.ParseInt(s, 10, 64); err == nil && ts > 1000000000 && ts < 9999999999 {
+		return time.Unix(ts, 0)
+	}
 	layouts := []string{
 		"2006-01-02 15:04",
 		"2006-01-02",
 		"01-02 15:04",
 		"2006/01/02 15:04",
+		"2006/01/02 15:04 -07:00", // Mikan: 2026/07/10 16:35 +08:00
+		"2006-01-02 15:04 -07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"1/2/2006 3:04 PM",     // Mikan US format: 7/10/2026 8:35 AM
+		"1/2/2006 15:04",       // Mikan alternate
+		"1/2/2006 3:04 PM -07:00", // Mikan with timezone
+		"01/02/2006 15:04",     // dmhy alternate
 		time.RFC1123,
 		time.RFC1123Z,
 	}

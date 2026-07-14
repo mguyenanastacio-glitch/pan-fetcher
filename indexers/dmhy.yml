@@ -18,25 +18,32 @@ search:
   inputs:
     keyword: "{{ .Keywords }}"
     sort_id: "0"
+    page: "{{.Page}}"
   rows:
     selector: "table#topic_list tbody tr:has(a[href^=\"magnet:?\"])"
     after: 0
   fields:
     title:
-      selector: "td:nth-child(3) a"
+      selector: "td:nth-child(3)"
     download:
       selector: "a[href^=\"magnet:?\"]"
       attribute: href
     size:
       selector: "td:nth-child(5)"
+    date_span:
+      selector: "td:nth-child(1) span"
+      optional: true
+    date_raw:
+      selector: "td:nth-child(1)"
+      optional: true
     date:
-      selector: "td:nth-child(2) span"
+      text: "{{ or .Result.date_span .Result.date_raw }}"
     seeders:
       selector: "td:nth-child(6)"
     leechers:
       selector: "td:nth-child(7)"
     category:
-      selector: "td:nth-child(1)"
+      selector: "td:nth-child(2)"
     page:
       selector: "td:nth-child(3) a"
       attribute: href

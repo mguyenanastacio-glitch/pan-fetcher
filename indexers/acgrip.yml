@@ -24,6 +24,7 @@ search:
     - path: /
   inputs:
     term: "{{ .Keywords }}"
+    page: "{{.Page}}"
 
   rows:
     selector: tbody tr
@@ -46,7 +47,7 @@ search:
     leechers:
       text: 1
     date:
-      # unix
+      # Unix timestamp in <time datetime="...">
       selector: td.date time
       attribute: datetime
     downloadvolumefactor:

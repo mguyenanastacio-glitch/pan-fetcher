@@ -9,6 +9,7 @@ type SearchResult struct {
 	TorrentURL  string    `json:"torrent_url,omitempty"`
 	Size        int64     `json:"size"`
 	SizeFmt     string    `json:"-"` // pre-formatted size string for display
+	DateFmt     string    `json:"-"` // pre-formatted date string for display
 	Seeders     int       `json:"seeders"`
 	Leechers    int       `json:"leechers"`
 	PublishDate time.Time `json:"publish_date"`
@@ -28,6 +29,7 @@ type SearchRequest struct {
 	Sort      string   // "seeds" (default), "size", "date"
 	Indexers  []string // specific indexer IDs to search (empty = all enabled)
 	Limit     int
+	Page      int      // page number (1-based), 0 = first page
 }
 
 // IndexerInfo is the runtime info for a configured indexer.
@@ -42,4 +44,5 @@ type IndexerInfo struct {
 	HasLogin  bool   `json:"has_login"`
 	LastError string `json:"last_error,omitempty"`
 	LastTest  string `json:"last_test,omitempty"`
+	Source    string `json:"source,omitempty"` // "local" or "jackett"
 }
