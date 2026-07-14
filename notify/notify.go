@@ -15,6 +15,7 @@ import (
 var (
 	mu         sync.Mutex
 	webhookURL string
+	tzLoc      *time.Location
 	client     = &http.Client{Timeout: 10 * time.Second}
 )
 
@@ -23,6 +24,30 @@ func SetWebhook(url string) {
 	mu.Lock()
 	defer mu.Unlock()
 	webhookURL = url
+}
+
+// SetTimezone sets the timezone for notification timestamps.
+func SetTimezone(tz string) {
+	mu.Lock()
+	defer mu.Unlock()
+	if tz == "" {
+		tzLoc = nil
+		return
+	}
+	loc, err := time.LoadLocation(tz)
+	if err == nil {
+		tzLoc = loc
+	}
+}
+
+func now() time.Time {
+	mu.Lock()
+	loc := tzLoc
+	mu.Unlock()
+	if loc != nil {
+		return time.Now().In(loc)
+	}
+	return time.Now()
 }
 
 // Webhook returns the current webhook URL.
@@ -85,7 +110,7 @@ func TaskSubmitted(count int, cid string) string {
 	return fmt.Sprintf(`## 离线任务已提交
 > **数量**: %d 个
 > **目标目录**: %s
-> **时间**: %s`, count, cid, time.Now().Format("15:04:05"))
+> **时间**: %s`, count, cid, now().Format("15:04:05"))
 }
 
 // TaskFailed formats a message for a failed task.
@@ -93,7 +118,7 @@ func TaskFailed(name string, cid string) string {
 	return fmt.Sprintf(`## 离线任务失败
 > **任务**: %s
 > **目标目录**: %s
-> **时间**: %s`, name, cid, time.Now().Format("15:04:05"))
+> **时间**: %s`, name, cid, now().Format("15:04:05"))
 }
 
 // RSSFound formats a message when new items are found in RSS feed.
@@ -101,14 +126,14 @@ func RSSFound(subName string, count int) string {
 	return fmt.Sprintf(`## RSS 新资源
 > **订阅**: %s
 > **新增**: %d 条
-> **时间**: %s`, subName, count, time.Now().Format("15:04:05"))
+> **时间**: %s`, subName, count, now().Format("15:04:05"))
 }
 
 // ServerStarted formats a startup message.
 func ServerStarted(port int) string {
 	return fmt.Sprintf(`## pan-fetcher 已启动
 > **端口**: %d
-> **时间**: %s`, port, time.Now().Format("2006-01-02 15:04:05"))
+> **时间**: %s`, port, now().Format("2006-01-02 15:04:05"))
 }
 
 // Test sends a test message to the given webhook synchronously.
@@ -117,7 +142,7 @@ func Test(webhookURL string) error {
 	msg := weworkMsg{
 		MsgType: "markdown",
 		Markdown: weworkMD{
-			Content: fmt.Sprintf("## pan-fetcher 通知测试 ✅\n> 时间: %s\n> Webhook 配置成功", time.Now().Format("15:04:05")),
+			Content: fmt.Sprintf("## pan-fetcher 通知测试 ✅\n> 时间: %s\n> Webhook 配置成功", now().Format("15:04:05")),
 		},
 	}
 	body, err := json.Marshal(&msg)

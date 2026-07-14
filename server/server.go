@@ -156,7 +156,10 @@ type dashboardData struct {
 	HasPassword     bool
 	NotifyTask      bool
 	NotifyRSS       bool
-	NotifyStartup   bool
+	NotifyLog       bool
+	Timezone        string
+	TimezoneOptions map[string]string
+	AboutVersion    string
 }
 
 type dashStats struct {
@@ -174,6 +177,8 @@ type dedupEntry struct {
 }
 
 var srv *http.Server
+
+const Version = "v0.4.0"
 
 var rssJsonPath = "rss.json"
 var dedupCachePath = "dedup-cache.json"
@@ -491,7 +496,8 @@ type webSettings struct {
 	SubsInterval  int    `json:"subs_interval"`
 	NotifyTask    bool   `json:"notify_task"`
 	NotifyRSS     bool   `json:"notify_rss"`
-	NotifyStartup bool   `json:"notify_startup"`
+	NotifyLog     bool   `json:"notify_log"`
+	Timezone      string `json:"timezone"`
 }
 
 func (s *Server) loadWebSettings() webSettings {
@@ -575,8 +581,68 @@ func (lb *logBuffer) Lines() []string {
 
 var logBuf = newLogBuffer(500)
 
+// tzLogWriter wraps a writer and converts log timestamps to the configured timezone.
+type tzLogWriter struct {
+	out io.Writer
+	tz  *time.Location
+}
+
+func (w *tzLogWriter) Write(p []byte) (int, error) {
+	if w.tz == nil {
+		return w.out.Write(p)
+	}
+	// Go log format: "2009/01/23 01:23:23 message" (20 chars timestamp prefix)
+	line := string(p)
+	if len(line) > 20 {
+		t, err := time.Parse("2006/01/02 15:04:05", line[:19])
+		if err == nil {
+			line = t.In(w.tz).Format("2006/01/02 15:04:05") + line[19:]
+		}
+	}
+	return w.out.Write([]byte(line))
+}
+
+var tzWriter = &tzLogWriter{out: io.MultiWriter(logBuf, os.Stderr)}
+
+var timezones = map[string]string{
+	"":                  "系统默认",
+	"Asia/Shanghai":     "Asia/Shanghai",
+	"Asia/Tokyo":        "Asia/Tokyo",
+	"Asia/Hong_Kong":    "Asia/Hong_Kong",
+	"UTC":               "UTC",
+	"Europe/London":     "Europe/London",
+	"America/New_York":  "America/New_York",
+	"America/Los_Angeles": "America/Los_Angeles",
+}
+
 func init() {
-	log.SetOutput(io.MultiWriter(logBuf, os.Stderr))
+	log.SetOutput(tzWriter)
+	log.SetFlags(log.LstdFlags)
+}
+
+// SetTimezone sets the timezone for log timestamps.
+func SetTimezone(tz string) {
+	if tz == "" {
+		tzWriter.tz = nil
+		return
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		tzWriter.tz = nil
+		return
+	}
+	tzWriter.tz = loc
+}
+
+func formatTimeInTZ(t time.Time, tz string) string {
+	if tz == "" {
+		return t.Format("15:04:05")
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return t.Format("15:04:05")
+	}
+	return t.In(loc).Format("15:04:05")
 }
 
 // ---------- web auth ----------
@@ -838,7 +904,8 @@ var translations = map[string]map[string]string{
 		"test_btn":                "测试",
 		"notify_task":             "任务推送",
 		"notify_rss":              "RSS推送",
-		"notify_startup":          "启动通知",
+		"notify_log":              "日志推送",
+		"timezone_label":          "时区",
 		"restart_service_btn":     "🔄 重启服务",
 		"confirm_btn":             "确定",
 		"browse_btn":              "📁 浏览",
@@ -856,6 +923,8 @@ var translations = map[string]map[string]string{
 		"about_desc":           "pan-fetcher 是一款集成 115 网盘管理的 RSS 订阅下载工具，支持多索引器聚合搜索、离线任务管理、文件管理等功能。",
 		"about_version":        "版本",
 		"about_author":         "源自 zhifengle/rss2cloud，融合 Prowlarr 索引引擎",
+		"about_links":          "相关链接",
+		"about_based_on":       "基于",
 		// JSON-only
 		// 订阅 / 搜索 弹窗
 		"enabled":              "启用",
@@ -1108,7 +1177,8 @@ var translations = map[string]map[string]string{
 		"test_btn":                "Test",
 		"notify_task":             "Task Push",
 		"notify_rss":              "RSS Push",
-		"notify_startup":          "Startup",
+		"notify_log":              "Log Push",
+		"timezone_label":          "TZ",
 		"restart_service_btn":     "🔄 Restart Service",
 		"confirm_btn":             "OK",
 		"browse_btn":              "📁 Browse",
@@ -1126,6 +1196,8 @@ var translations = map[string]map[string]string{
 		"about_desc":           "pan-fetcher is an RSS subscription download tool with integrated 115 cloud management, featuring multi-indexer aggregated search, offline task management, and file management.",
 		"about_version":        "Version",
 		"about_author":         "Based on zhifengle/rss2cloud, powered by Prowlarr indexer engine",
+		"about_links":          "Links",
+		"about_based_on":       "Based on",
 		// JSON-only
 		// Subscriptions / Search modals
 		"enabled":              "Enabled",
@@ -2011,17 +2083,41 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "about"}}
     <div class="card panel">
       <h2>{{index .T "about_title"}}</h2>
-      <p>{{index .T "about_desc"}}</p>
-      <p class="muted" style="font-size:13px;">{{index .T "about_version"}}: <code>1.0.0</code></p>
-      <p class="muted" style="font-size:13px;">{{index .T "about_author"}}</p>
-      <p class="hint">© 2025-2026 pan-fetcher</p>
+      <p style="font-size:14px;line-height:1.8;">{{index .T "about_desc"}}</p>
+      <div style="margin-top:16px;display:flex;flex-wrap:wrap;gap:12px;">
+        <span class="badge badge-running">Go</span>
+        <span class="badge badge-running">SQLite</span>
+        <span class="badge badge-done">115 API</span>
+        <span class="badge badge-done">Cardigann</span>
+      </div>
+      <div style="margin-top:16px;padding:12px;background:#f8fafc;border-radius:10px;border:1px solid var(--line);">
+        <table style="width:100%;font-size:13px;border-collapse:collapse;">
+          <tr><td style="padding:4px 0;color:var(--muted);width:80px;">{{index .T "about_version"}}</td><td><strong>pan-fetcher {{.AboutVersion}}</strong></td></tr>
+          <tr><td style="padding:4px 0;color:var(--muted);">Go</td><td>1.23</td></tr>
+          <tr><td style="padding:4px 0;color:var(--muted);">{{index .T "about_author"}}</td><td>mguyenanastacio-glitch</td></tr>
+        </table>
+      </div>
     </div>
     <div class="card panel" style="margin-top:12px;">
-      <p style="font-size:12px;color:var(--text-muted);">
+      <h3 style="margin:0 0 8px;">🔗 {{index .T "about_links"}}</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:13px;">
+        <a href="https://github.com/mguyenanastacio-glitch/pan-fetcher" target="_blank" rel="noopener">GitHub</a>
+        <span style="color:var(--line);">|</span>
+        <a href="https://github.com/mguyenanastacio-glitch/pan-fetcher/releases" target="_blank" rel="noopener">Releases</a>
+        <span style="color:var(--line);">|</span>
+        <a href="https://github.com/mguyenanastacio-glitch/pan-fetcher/issues" target="_blank" rel="noopener">Issues</a>
+      </div>
+    </div>
+    <div class="card panel" style="margin-top:12px;">
+      <p style="font-size:12px;color:var(--muted);margin:0;">
+        {{index .T "about_based_on"}}
         <a href="https://github.com/zhifengle/rss2cloud" target="_blank" rel="noopener">rss2cloud</a>
         &nbsp;·&nbsp;
         <a href="https://github.com/Prowlarr/Prowlarr" target="_blank" rel="noopener">Prowlarr</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/Nahuimi/elevengo" target="_blank" rel="noopener">elevengo</a>
       </p>
+      <p class="hint" style="margin-top:8px;">© 2025-2026 pan-fetcher</p>
     </div>
     {{end}}
 
@@ -2428,13 +2524,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--muted);">
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
-                <input type="checkbox" name="notify_task" value="1" style="width:auto;margin:0;"{{if .NotifyTask}} checked{{end}}>{{index .T "notify_task"}}
+                <input type="checkbox" name="notify_task" value="1" style="width:auto;margin:0;"{{if .NotifyTask}} checked{{end}} onclick="if(this.checked){document.getElementsByName('notify_log')[0].checked=false}">{{index .T "notify_task"}}
               </label>
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
-                <input type="checkbox" name="notify_rss" value="1" style="width:auto;margin:0;"{{if .NotifyRSS}} checked{{end}}>{{index .T "notify_rss"}}
+                <input type="checkbox" name="notify_rss" value="1" style="width:auto;margin:0;"{{if .NotifyRSS}} checked{{end}} onclick="if(this.checked){document.getElementsByName('notify_log')[0].checked=false}">{{index .T "notify_rss"}}
               </label>
               <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin:0;">
-                <input type="checkbox" name="notify_startup" value="1" style="width:auto;margin:0;"{{if .NotifyStartup}} checked{{end}}>{{index .T "notify_startup"}}
+                <input type="checkbox" name="notify_log" value="1" style="width:auto;margin:0;"{{if .NotifyLog}} checked{{end}} onclick="if(this.checked){var t=document.getElementsByName('notify_task')[0];var r=document.getElementsByName('notify_rss')[0];if(t)t.checked=false;if(r)r.checked=false;}">{{index .T "notify_log"}}
+              </label>
+              <span style="color:var(--line);">|</span>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;margin:0;">
+                <span style="white-space:nowrap;">{{index .T "timezone_label"}}</span>
+                <select name="timezone" style="width:auto;font-size:12px;padding:2px 4px;margin:0;">
+                  {{range $val, $name := .TimezoneOptions}}<option value="{{$val}}"{{if eq $.Timezone $val}} selected{{end}}>{{$name}}</option>{{end}}
+                </select>
               </label>
             </div>
           </div>
@@ -2532,6 +2635,10 @@ func (s *Server) LoadNotifyConfig() {
 		s.WeworkWH = cfg.Notify.WeworkWebhook
 		notify.SetWebhook(cfg.Notify.WeworkWebhook)
 	}
+	// Load timezone setting
+	ws := s.loadWebSettings()
+	SetTimezone(ws.Timezone)
+	notify.SetTimezone(ws.Timezone)
 }
 
 // saveProxyConfig persists the current proxy setting to config.toml.
@@ -3255,9 +3362,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ws.NotifyRSS = v
 			changes = append(changes, fmt.Sprintf("notify_rss=%v", v))
 		}
-		if v := r.FormValue("notify_startup") == "1"; v != ws.NotifyStartup {
-			ws.NotifyStartup = v
-			changes = append(changes, fmt.Sprintf("notify_startup=%v", v))
+		if v := r.FormValue("notify_log") == "1"; v != ws.NotifyLog {
+			ws.NotifyLog = v
+			if v {
+				ws.NotifyTask = false
+				ws.NotifyRSS = false
+			}
+			changes = append(changes, fmt.Sprintf("notify_log=%v", v))
+		}
+		// Timezone
+		if v := strings.TrimSpace(r.FormValue("timezone")); v != ws.Timezone {
+			ws.Timezone = v
+			SetTimezone(v)
+			notify.SetTimezone(v)
+			changes = append(changes, fmt.Sprintf("timezone=%s", v))
 		}
 
 		if len(changes) > 0 {
@@ -3289,7 +3407,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data.WeworkWebhook = s.WeworkWH
 		data.NotifyTask = ws.NotifyTask
 		data.NotifyRSS = ws.NotifyRSS
-		data.NotifyStartup = ws.NotifyStartup
+		data.NotifyLog = ws.NotifyLog
+		data.Timezone = ws.Timezone
+		data.TimezoneOptions = timezones
 		if s.Agent != nil {
 			data.Settings = s.Agent.GetSettings()
 		}
@@ -3321,7 +3441,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	data.WeworkWebhook = s.WeworkWH
 	data.NotifyTask = ws.NotifyTask
 	data.NotifyRSS = ws.NotifyRSS
-	data.NotifyStartup = ws.NotifyStartup
+	data.NotifyLog = ws.NotifyLog
+	data.Timezone = ws.Timezone
+	data.TimezoneOptions = timezones
 	if s.Agent != nil {
 		data.Settings = s.Agent.GetSettings()
 	}
@@ -3479,6 +3601,7 @@ func extractNameFromURL(rawURL string) string {
 func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")
 	data.Page = "about"
+	data.AboutVersion = Version
 	dashboardTemplate.Execute(w, data)
 }
 

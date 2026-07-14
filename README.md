@@ -1,202 +1,175 @@
-﻿# pan-fetcher
+# pan-fetcher
 
-115 网盘 RSS 订阅下载管理器，支持多索引器聚合搜索、文件管理、离线任务监控。
+<p align="center">
+  <strong>115 网盘 · RSS 订阅 · 聚合搜索 · 一站式媒体自动化</strong>
+</p>
 
-*[English](#english)*
+<p align="center">
+  <a href="https://github.com/mguyenanastacio-glitch/pan-fetcher/releases"><img src="https://img.shields.io/github/v/release/mguyenanastacio-glitch/pan-fetcher?style=flat-square" alt="release"></a>
+  <a href="https://github.com/mguyenanastacio-glitch/pan-fetcher/blob/master/LICENSE"><img src="https://img.shields.io/github/license/mguyenanastacio-glitch/pan-fetcher?style=flat-square" alt="license"></a>
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square&logo=go" alt="go"></a>
+</p>
 
-## 功能
+---
 
-- **� 仪表盘** — 首页概览：推送数、订阅活跃度、索引器数量、缓存条目、运行时长
-- **📡 聚合搜索** — 12 个 BT 索引器，类 Cardigann YAML 驱动，支持分类筛选和关键词过滤
-- **📋 RSS 订阅** — 自动定时抓取（默认 60 分钟），info hash 去重缓存，支持关键词过滤
-- **📥 离线下载** — 磁力/ed2k/http 链接批量提交到 115 离线任务，下载中/失败/已完成分页
-- **📂 文件管理** — Web 端新建/重命名/删除/移动/复制 115 云文件，面包屑导航
-- **🗄️ 缓存管理** — 订阅页内嵌缓存查看，显示资源名称，支持单条移除和清空
-- **📜 运行日志** — 500 条环形缓冲，3 秒自动刷新，溢出标记提示
-- **⚙️ Web 管理** — 中英双语（侧栏切换），Web 密码保护，HTTPS/TLS 支持，服务自重启
+自动追番 / 追剧工具。搜索 → 订阅 → 自动推送到 115 离线下载，Web 面板管理全流程。
 
-## 安装
+[English](#english)
 
-### 预编译二进制（推荐）
+## ✨ 特性
 
-从 [Releases](https://github.com/mguyenanastacio-glitch/pan-fetcher/releases) 下载对应平台的最新版本：
+<table>
+<tr><td width="50%">
 
-| 平台 | 文件 |
-|------|------|
-| Linux amd64 | `pan-fetcher-vX.Y.Z-linux-amd64.tar.gz` |
-| Linux arm64 | `pan-fetcher-vX.Y.Z-linux-arm64.tar.gz` |
-| macOS amd64 | `pan-fetcher-vX.Y.Z-darwin-amd64.tar.gz` |
-| macOS arm64 | `pan-fetcher-vX.Y.Z-darwin-arm64.tar.gz` |
-| Windows amd64 | `pan-fetcher-vX.Y.Z-windows-amd64.zip` |
+### 🔍 聚合搜索
+12 个 BT 索引器 · Cardigann YAML 兼容 · 分类筛选 · 关键词实时过滤 · 搜索结果一键订阅
 
-解压后将二进制放到 `PATH` 目录下即可。
+### 📋 RSS 订阅
+定时抓取 · info hash 去重 · 关键词/正则过滤 · 启用/禁用开关 · 缓存管理
 
-### Linux 一键安装
+### 📥 离线下载
+磁力 / ed2k / http 批量提交 · 下载中 / 失败 / 已完成分页 · 任务清理
+
+</td><td width="50%">
+
+### 📊 仪表盘
+推送统计 · 订阅活跃度 · 索引器数量 · 缓存条目 · 运行时长 · 密码状态
+
+### 🔔 通知推送
+企业微信 Webhook · 任务/RSS/启动独立开关 · 一键测试
+
+### ⚙️ 部署友好
+Docker 一键部署 · HTTPS/TLS · Linux systemd · 5 平台预编译二进制
+
+</td></tr>
+</table>
+
+## 🚀 快速开始
+
+### Docker（推荐）
+
+```bash
+mkdir pan-fetcher && cd pan-fetcher
+wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/docker-compose.yml
+wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/config.example.toml -O config.toml
+# 编辑 config.toml 填入 115 cookies
+mkdir -p data && docker-compose up -d
+```
+
+浏览器打开 `http://<IP>:8115`，进入设置页完成配置。
+
+### Linux 一键脚本
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/scripts/install-release.sh | sudo bash
 ```
 
-自动完成：下载最新版 → 安装到 `/usr/local/bin/` → 创建数据目录 → 注册 systemd 服务。
+### 预编译二进制
 
-更新或卸载：
+从 [Releases](https://github.com/mguyenanastacio-glitch/pan-fetcher/releases) 下载对应平台文件，解压即可运行。
 
-```bash
-sudo bash scripts/install-release.sh update     # 更新到最新版
-sudo bash scripts/install-release.sh uninstall  # 卸载（保留数据）
-sudo bash scripts/install-release.sh purge      # 完全清除
-```
+| Linux amd64 | Linux arm64 | macOS amd64 | macOS arm64 | Windows amd64 |
+|:--:|:--:|:--:|:--:|:--:|
+| `tar.gz` | `tar.gz` | `tar.gz` | `tar.gz` | `zip` |
 
-### Docker（推荐服务端部署）
-
-```bash
-# 一键部署
-mkdir pan-fetcher && cd pan-fetcher
-wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/docker-compose.yml
-wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/config.example.toml -O config.toml
-# 编辑 config.toml 填入 cookies
-mkdir -p data && docker-compose up -d
-```
-
-访问 `http://<服务器IP>:8115`。镜像自动从 ghcr.io 拉取，无需克隆仓库。
-
-**HTTPS 配置：** 将证书挂载进容器，在 `config.toml` 中配置：
-
-```toml
-[server]
-port = 8115
-domain = "pan.example.com"
-cert_file = "/certs/fullchain.pem"
-key_file = "/certs/privkey.pem"
-```
-
-然后 `docker-compose.yml` 中挂载证书目录：
-
-```yaml
-volumes:
-  - ./certs:/certs:ro
-```
-
-### 从源码编译（需 Go 1.23+）
+### 从源码编译
 
 ```bash
 git clone https://github.com/mguyenanastacio-glitch/pan-fetcher.git
-cd pan-fetcher
-go build -o pan-fetcher .
-
-# 启动 Web 服务（默认端口 8115）
+cd pan-fetcher && go build -o pan-fetcher .
 ./pan-fetcher server
 ```
 
-Windows 下编译产物为 `pan-fetcher.exe`，启动命令相同。
+## 🖥️ 页面导航
 
-## 配置
-
-启动后浏览器打开 `http://localhost:8115`，进入设置页粘贴 115 Cookies，填写其他参数后保存即可。配置文件详见 [config-files.md](docs/config-files.md)。
-
-## 页面导航
-
-| 页面 | 路由 | 功能 |
+| 页面 | 路由 | 说明 |
 |------|------|------|
-| 仪表盘 | `/` | 推送数、订阅、索引器、缓存统计，运行时长，密码状态 |
-| 离线下载 | `/tasks` | 提交磁力任务，下载中/失败/已完成分页，清理任务 |
-| 资源搜索 | `/search` | 跨索引器聚合搜索，关键词过滤，搜索订阅，RSS 导出 |
-| 索引器 | `/indexers` | 激活/停用/测试索引器，编辑 YAML 定义，站点登录 |
-| 文件管理 | `/fs` | 浏览 115 目录，新建/重命名/删除/移动/复制 |
-| 订阅管理 | `/subs` | RSS 订阅增删改，立即执行，缓存查看与清空 |
-| 运行日志 | `/log` | 实时日志（3 秒轮询），顶部最新，溢出标记 |
-| 设置 | `/settings` | Cookies、代理、域名、HTTPS 证书、Web 密码、服务重启 |
-| 关于 | `/about` | 版本和项目信息 |
+| 仪表盘 | `/` | 推送/订阅/索引器/缓存统计，运行时长 |
+| 离线下载 | `/tasks` | 磁力提交，分页任务列表，清理 |
+| 资源搜索 | `/search` | 跨站聚合搜索，关键词过滤 |
+| 索引器 | `/indexers` | 激活/测试/编辑 YAML 定义 |
+| 文件管理 | `/fs` | 115 目录浏览、新建、移动、复制 |
+| 订阅管理 | `/subs` | RSS 增删改、手动执行、缓存查看 |
+| 运行日志 | `/log` | 实时日志，自动刷新 |
+| 设置 | `/settings` | Cookies、代理、域名、HTTPS、通知 |
 
-## CLI 命令
+## ⌨️ CLI 命令
 
-| 命令 | 说明 |
-|------|------|
-| `pan-fetcher server` | 启动 Web 管理面板 |
-| `pan-fetcher magnet --link "magnet:?...` | 添加磁力任务 |
-| `pan-fetcher fs ls [dir]` | 列出目录 |
-| `pan-fetcher fs mkdir <path>` | 创建目录 |
-| `pan-fetcher fs rename <path> <name>` | 重命名 |
-| `pan-fetcher fs mv <src...> <dst>` | 移动 |
-| `pan-fetcher fs rm <path...>` | 删除 |
-| `pan-fetcher fs shell` | 交互式 Shell（Tab 补全） |
+```bash
+pan-fetcher server                     # 启动 Web 面板
+pan-fetcher magnet --link "magnet:..." # 添加磁力
+pan-fetcher fs ls [dir]                # 列出目录
+pan-fetcher fs shell                   # 交互式 Shell（Tab 补全）
+```
 
-## 技术栈
+完整命令：`ls`, `mkdir`, `rename`, `mv`, `rm`, `cp`, `stat`, `pwd`, `flatten`, `search-mv`
 
-Go 1.23 + SQLite + 单体 HTML 模板（内嵌 CSS/JS），无前端框架依赖。115 API 通过 elevengo 库调用。
+## 🔧 配置示例
 
-## 致谢
+```toml
+# config.toml（可选，Web 设置页即可完成全部配置）
+[server]
+port = 8115
+# domain = "pan.example.com"           # 域名访问
+# cert_file = "/certs/fullchain.pem"   # HTTPS
+# key_file = "/certs/privkey.pem"
 
-本项目基于 [zhifengle/rss2cloud](https://github.com/zhifengle/rss2cloud)，索引引擎参考 [Prowlarr](https://github.com/Prowlarr/Prowlarr) 的 Cardigann 兼容设计。
+[notify]
+wework_webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+```
+
+## 🛠️ 技术栈
+
+Go 1.23 · SQLite · 单体 `html/template`（零前端依赖） · [elevengo](https://github.com/Nahuimi/elevengo) 115 API
+
+## 🙏 致谢
+
+- [zhifengle/rss2cloud](https://github.com/zhifengle/rss2cloud) — 项目原型
+- [Prowlarr](https://github.com/Prowlarr/Prowlarr) — Cardigann 索引引擎参考
+- [Nahuimi/elevengo](https://github.com/Nahuimi/elevengo) — 115 API 库
 
 ---
 
 ## English {#english}
 
-A 115 cloud storage RSS download manager with multi-indexer search, file management, and offline task monitoring.
+Automated media downloader for 115 cloud storage. Search across BT indexers, subscribe to RSS feeds, auto-push to offline tasks — all managed via a clean Web UI.
 
 ### Features
 
-- **� Dashboard** — Stats overview: pushed tasks, active subs, indexers, cache, uptime
-- **📡 Aggregated Search** — 12 BT indexers, Cardigann-compatible YAML engine, keyword filter
-- **📋 RSS Subscriptions** — Auto-fetch (default 60 min), info hash dedup, keyword filter
-- **📥 Offline Download** — Magnet/ed2k/http batch submit, downloading/failed/done tabs
-- **📂 File Management** — Web UI for mkdir/rename/delete/move/copy with breadcrumbs
-- **🗄️ Cache Viewer** — Embedded cache view with name display, single hash removal & clear
-- **📜 Live Logs** — 500-line ring buffer, 3s auto-refresh, overflow marker
-- **⚙️ Web Admin** — CN/EN bilingual, Web password, HTTPS/TLS support, self-restart
+- **📊 Dashboard** — Push count, active subs, indexers, cache stats, uptime
+- **🔍 Aggregated Search** — 12 indexers via Cardigann-compatible YAML engine
+- **📋 RSS Subscriptions** — Auto-fetch, info hash dedup, keyword filter
+- **📥 Offline Download** — Magnet/ed2k/http batch submit with status tabs
+- **📂 File Manager** — Browse, rename, move, copy, delete 115 cloud files
+- **🔔 Notifications** — WeChat Work webhook with per-event toggles
+- **🐳 Docker** — One-command deploy, image from ghcr.io
+- **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, self-restart
 
 ### Quick Start
 
-**Pre-built binaries** (recommended): download from [Releases](https://github.com/mguyenanastacio-glitch/pan-fetcher/releases) for your platform.
-
-**Linux one-liner:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/scripts/install-release.sh | sudo bash
-```
-
-**Docker** (recommended for servers):
+**Docker (recommended):**
 
 ```bash
 mkdir pan-fetcher && cd pan-fetcher
 wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/docker-compose.yml
 wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/config.example.toml -O config.toml
-# edit config.toml with your cookies
 mkdir -p data && docker-compose up -d
 ```
 
-Image pulled automatically from ghcr.io — no repo clone needed.
+**Linux script:** `curl -fsSL https://.../install-release.sh | sudo bash`
 
-**Build from source** (Go 1.23+):
+**Binaries:** [GitHub Releases](https://github.com/mguyenanastacio-glitch/pan-fetcher/releases)
 
-```bash
-git clone https://github.com/mguyenanastacio-glitch/pan-fetcher.git
-cd pan-fetcher
-go build -o pan-fetcher .
-./pan-fetcher server   # http://localhost:8115
-```
-
-Paste 115 cookies in the Settings page to get started.
-
-### Pages
-
-| Page | Route | Description |
-|------|-------|-------------|
-| Dashboard | `/` | Stats overview with push count, subs, indexers, cache, uptime |
-| Downloads | `/tasks` | Submit magnets, downloading/failed/done tabs, clear tasks |
-| Search | `/search` | Multi-indexer search, keyword filter, RSS export |
-| Indexers | `/indexers` | Activate/test/edit YAML indexer definitions |
-| Files | `/fs` | Browse/manage 115 cloud files and folders |
-| Subscriptions | `/subs` | CRUD RSS subs, run now, view/clear cache |
-| Logs | `/log` | Real-time logs (3s poll), newest-first, overflow marker |
-| Settings | `/settings` | Cookies, proxy, domain, HTTPS cert, password, restart |
-| About | `/about` | Version and credits |
+**From source:** `go build -o pan-fetcher . && ./pan-fetcher server`
 
 ### Tech Stack
 
-Go 1.23 + SQLite + single `html/template` (inline CSS/JS). 115 API via elevengo.
+Go 1.23 · SQLite · single `html/template` (zero frontend deps) · [elevengo](https://github.com/Nahuimi/elevengo)
 
 ### Credits
 
 Based on [zhifengle/rss2cloud](https://github.com/zhifengle/rss2cloud). Indexer engine inspired by [Prowlarr](https://github.com/Prowlarr/Prowlarr).
+
+### License
+
+[MIT](LICENSE)
