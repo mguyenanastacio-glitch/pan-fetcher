@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   pan-fetcher:
-    build: .
+    image: ghcr.io/mguyenanastacio-glitch/pan-fetcher:latest
     container_name: pan-fetcher
     restart: unless-stopped
     ports:
@@ -10,8 +10,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.toml:/app/config.toml:ro
-      - ./rss.json:/app/rss.json
-      - ./indexers:/app/indexers:ro
     environment:
       - TZ=Asia/Shanghai
     healthcheck:

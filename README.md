@@ -50,16 +50,15 @@ sudo bash scripts/install-release.sh purge      # 完全清除
 ### Docker（推荐服务端部署）
 
 ```bash
-# 克隆项目
-git clone https://github.com/mguyenanastacio-glitch/pan-fetcher.git
-cd pan-fetcher
-
-# 创建数据目录并启动
-mkdir -p data
-docker-compose up -d
+# 一键部署
+mkdir pan-fetcher && cd pan-fetcher
+wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/docker-compose.yml
+wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/config.example.toml -O config.toml
+# 编辑 config.toml 填入 cookies
+mkdir -p data && docker-compose up -d
 ```
 
-访问 `http://<服务器IP>:8115`。数据持久化在 `./data` 目录。
+访问 `http://<服务器IP>:8115`。镜像自动从 ghcr.io 拉取，无需克隆仓库。
 
 **HTTPS 配置：** 将证书挂载进容器，在 `config.toml` 中配置：
 
@@ -160,9 +159,14 @@ curl -fsSL https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/
 **Docker** (recommended for servers):
 
 ```bash
-git clone https://github.com/mguyenanastacio-glitch/pan-fetcher.git
-cd pan-fetcher && mkdir -p data && docker-compose up -d
+mkdir pan-fetcher && cd pan-fetcher
+wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/docker-compose.yml
+wget https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/master/config.example.toml -O config.toml
+# edit config.toml with your cookies
+mkdir -p data && docker-compose up -d
 ```
+
+Image pulled automatically from ghcr.io — no repo clone needed.
 
 **Build from source** (Go 1.23+):
 

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -66,3 +67,26 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: pan-fetcher-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.*
           prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+
+  docker:
+    name: Docker Image
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/pan-fetcher:latest
+            ghcr.io/${{ github.repository_owner }}/pan-fetcher:${{ github.ref_name }}
