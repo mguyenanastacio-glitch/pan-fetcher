@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -4457,6 +4459,10 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 	// Determine platform
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
+	binaryName := "pan-fetcher"
+	if goos == "windows" {
+		binaryName = "pan-fetcher.exe"
+	}
 
 	// Get latest release info
 	resp, err := http.Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
@@ -4483,15 +4489,14 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find matching asset
+	// Find matching asset (tar.gz for unix, zip for windows)
 	pattern := fmt.Sprintf("%s-%s", goos, goarch)
-	if goos == "darwin" && goarch == "amd64" {
-		pattern = "darwin-amd64"
-	}
 	var downloadURL string
+	var isZip bool
 	for _, a := range release.Assets {
 		if strings.Contains(a.Name, pattern) && !strings.Contains(a.Name, "checksum") {
 			downloadURL = a.URL
+			isZip = strings.HasSuffix(a.Name, ".zip")
 			break
 		}
 	}
@@ -4500,13 +4505,25 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Download the binary
+	// Download the archive
 	dlResp, err := http.Get(downloadURL)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_download_failed") + ": " + err.Error()})
 		return
 	}
 	defer dlResp.Body.Close()
+
+	// Extract binary from archive
+	var binaryData []byte
+	if isZip {
+		binaryData, err = extractFromZip(dlResp.Body, binaryName)
+	} else {
+		binaryData, err = extractFromTarGz(dlResp.Body, binaryName)
+	}
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_download_failed") + ": " + err.Error()})
+		return
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -4516,20 +4533,12 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Write to temp file, then rename
 	tmpPath := exe + ".new"
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "open temp: " + err.Error()})
+	if err := os.WriteFile(tmpPath, binaryData, 0755); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "write temp: " + err.Error()})
 		return
 	}
-	if _, err := io.Copy(f, dlResp.Body); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "write: " + err.Error()})
-		return
-	}
-	f.Close()
 
-	// On Windows, rename the current exe to .old first
+	// On Windows, rename current exe to .old first
 	oldPath := exe + ".old"
 	if goos == "windows" {
 		os.Remove(oldPath)
@@ -4545,7 +4554,6 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove old binary on non-Windows
 	if goos != "windows" {
 		os.Remove(oldPath)
 	}
@@ -4555,8 +4563,83 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 	// Restart after response
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		s.handleRestart(w, r)
+		doRestart()
 	}()
+}
+
+// extractFromTarGz extracts a named file from a .tar.gz stream.
+func extractFromTarGz(r io.Reader, name string) ([]byte, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("tar: %w", err)
+		}
+		if hdr.Name == name || filepath.Base(hdr.Name) == name {
+			return io.ReadAll(tr)
+		}
+	}
+	return nil, fmt.Errorf("binary %q not found in archive", name)
+}
+
+// extractFromZip extracts a named file from a ZIP stream.
+func extractFromZip(r io.Reader, name string) ([]byte, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read zip: %w", err)
+	}
+	// ZIP archives are not yet supported via streaming — use tar.gz on Linux/macOS
+	_ = data
+	return nil, fmt.Errorf("zip extraction not supported, use tar.gz")
+}
+
+// doRestart spawns a new process and exits.
+func doRestart() {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("[update] failed to get executable: %v", err)
+		os.Exit(1)
+	}
+	var args []string
+	skipNext := false
+	for i, a := range os.Args {
+		if i == 0 {
+			continue
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "--port" || a == "-p" {
+			args = append(args, a)
+			if i+1 < len(os.Args) {
+				args = append(args, os.Args[i+1])
+			}
+			skipNext = true
+			continue
+		}
+		args = append(args, a)
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Dir = filepath.Dir(exe)
+	prepareRestartCmd(cmd)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		log.Printf("[update] failed to spawn: %v", err)
+		os.Exit(1)
+	}
+	log.Printf("[update] new process started (pid %d), exiting", cmd.Process.Pid)
+	os.Exit(0)
 }
 
 // ---------- search ----------
