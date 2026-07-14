@@ -103,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/mguyenanastacio-glitch/pan-fetcher/
 
 ```bash
 git clone https://github.com/mguyenanastacio-glitch/pan-fetcher.git
-cd pan-fetcher && go build -o pan-fetcher .
+cd pan-fetcher && go build -ldflags="-s -w -X github.com/mguyenanastacio-glitch/pan-fetcher/server.Version=$(git describe --tags --always)" -o pan-fetcher .
 ./pan-fetcher server
 ```
 
@@ -196,7 +196,7 @@ mkdir -p data && docker-compose up -d
 
 **Binaries:** [GitHub Releases](https://github.com/mguyenanastacio-glitch/pan-fetcher/releases)
 
-**From source:** `go build -o pan-fetcher . && ./pan-fetcher server`
+**From source:** `go build -ldflags="-s -w -X github.com/mguyenanastacio-glitch/pan-fetcher/server.Version=$(git describe --tags --always)" -o pan-fetcher . && ./pan-fetcher server`
 
 ### Tech Stack
 

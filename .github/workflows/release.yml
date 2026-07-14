@@ -51,7 +51,8 @@ jobs:
         run: |
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
-          go build -ldflags="-s -w" -o "pan-fetcher${EXT}" .
+          VERSION=${{ github.ref_name }}
+          go build -ldflags="-s -w -X github.com/mguyenanastacio-glitch/pan-fetcher/server.Version=${VERSION}" -o "pan-fetcher${EXT}" .
 
       - name: Package (tar.gz)
         if: matrix.goos != 'windows'
