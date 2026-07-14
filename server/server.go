@@ -5355,15 +5355,10 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch Jackett indexers if configured
+	// Fetch fresh Jackett indexers and prune stale activations
 	data.JackettURL = s.JackettURL
 	data.JackettAPIKey = s.JackettAPIKey
-	// Load from cache if available (non-blocking)
-	s.jackettCacheMu.Lock()
-	if len(s.jackettCache) > 0 {
-		data.JackettLibrary = s.jackettCache
-	}
-	s.jackettCacheMu.Unlock()
+	data.JackettLibrary = s.refreshJackettCache()
 
 	// Add Jackett-activated indexers to active list (show both, label conflict)
 	s.jackettActiveMu.Lock()
@@ -5401,22 +5396,36 @@ func (s *Server) handleJackettList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use cache if fresh (< 5 min)
-	s.jackettCacheMu.Lock()
-	if time.Since(s.jackettCacheTime) < 5*time.Minute && len(s.jackettCache) > 0 {
-		data, _ := json.Marshal(s.jackettCache)
-		s.jackettCacheMu.Unlock()
-		fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+	jk := s.refreshJackettCache()
+	if len(jk) == 0 {
+		fmt.Fprint(w, `{"ok":true,"data":[]}`)
 		return
 	}
-	s.jackettCacheMu.Unlock()
 
-	// Fetch from Jackett
+	data, _ := json.Marshal(jk)
+	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+}
+
+// refreshJackettCache fetches the latest indexer list from Jackett,
+// updates the cache, and prunes stale entries from the active set.
+func (s *Server) refreshJackettCache() []jackett.IndexerInfo {
+	if s.JackettURL == "" || s.JackettAPIKey == "" {
+		return nil
+	}
+
 	jk, err := jackett.ListIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey})
 	if err != nil {
 		log.Printf("[jackett] list indexers: %v", err)
-		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
-		return
+		s.jackettCacheMu.Lock()
+		cached := s.jackettCache
+		s.jackettCacheMu.Unlock()
+		return cached
+	}
+
+	// Build set of current Jackett IDs
+	currentIDs := make(map[string]bool, len(jk))
+	for _, idx := range jk {
+		currentIDs[idx.ID] = true
 	}
 
 	// Update cache
@@ -5425,9 +5434,24 @@ func (s *Server) handleJackettList(w http.ResponseWriter, r *http.Request) {
 	s.jackettCacheTime = time.Now()
 	s.jackettCacheMu.Unlock()
 
+	// Prune stale entries from jackettActive
+	s.jackettActiveMu.Lock()
+	s.loadJackettEnabled()
+	changed := false
+	for id := range s.jackettActive {
+		if !currentIDs[id] {
+			delete(s.jackettActive, id)
+			changed = true
+			log.Printf("[jackett] removed stale activation: %s", id)
+		}
+	}
+	if changed {
+		s.saveJackettEnabled()
+	}
+	s.jackettActiveMu.Unlock()
+
 	log.Printf("[jackett] loaded %d configured indexers", len(jk))
-	data, _ := json.Marshal(jk)
-	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+	return jk
 }
 
 func (s *Server) handleIndexerTest(w http.ResponseWriter, r *http.Request) {
