@@ -213,7 +213,7 @@ EOF
 }
 
 install_release() {
-  local arch version tmp_dir tmp_file
+  local arch version tmp_dir tmp_file was_running
 
   require_linux_systemd
   require_command curl
@@ -228,13 +228,37 @@ install_release() {
   tmp_file="${tmp_dir}/${APP_NAME}.tar.gz"
   trap 'rm -rf "${tmp_dir:-}"' EXIT
 
+  # Stop existing service before replacing binary
+  if [ -f "$SERVICE_FILE" ] && systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
+    systemctl stop "$APP_NAME"
+    was_running=1
+  fi
+
   download_binary "$version" "$arch" "$tmp_file"
   install_config_dir
   install_default_config
   install_indexers
   install_binary "$tmp_file" "$tmp_dir"
   install_systemd_service
-  print_install_next_steps
+
+  # Start/restart service
+  if [ "${was_running:-0}" = 1 ] || [ -f "$SERVICE_FILE" ]; then
+    systemctl restart "$APP_NAME"
+    systemctl enable "$APP_NAME" >/dev/null 2>&1 || true
+    info "service restarted: ${APP_NAME}"
+  else
+    print_install_next_steps
+    return
+  fi
+
+  cat <<EOF
+
+pan-fetcher updated to ${version}.
+
+Service:
+  systemctl status ${APP_NAME}
+  journalctl -u ${APP_NAME} -f
+EOF
 }
 
 stop_service_if_present() {
