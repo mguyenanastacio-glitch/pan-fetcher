@@ -4531,31 +4531,18 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write to temp file, then rename
-	tmpPath := exe + ".new"
+	// Write to temp file (always writable), then copy into place
+	tmpPath := filepath.Join(os.TempDir(), binaryName+".new")
 	if err := os.WriteFile(tmpPath, binaryData, 0755); err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "write temp: " + err.Error()})
 		return
 	}
+	defer os.Remove(tmpPath)
 
-	// On Windows, rename current exe to .old first
-	oldPath := exe + ".old"
-	if goos == "windows" {
-		os.Remove(oldPath)
-		if err := os.Rename(exe, oldPath); err != nil {
-			os.Remove(tmpPath)
-			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "replace: " + err.Error()})
-			return
-		}
-	}
-
-	if err := os.Rename(tmpPath, exe); err != nil {
+	// Copy temp file over the executable
+	if err := copyFile(tmpPath, exe); err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "install: " + err.Error()})
 		return
-	}
-
-	if goos != "windows" {
-		os.Remove(oldPath)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
@@ -4565,6 +4552,29 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		doRestart()
 	}()
+}
+
+// copyFile copies a file from src to dst, preserving permissions.
+func copyFile(src, dst string) error {
+	s, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	info, err := s.Stat()
+	if err != nil {
+		return err
+	}
+
+	d, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	_, err = io.Copy(d, s)
+	return err
 }
 
 // extractFromTarGz extracts a named file from a .tar.gz stream.
