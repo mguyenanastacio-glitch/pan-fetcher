@@ -1,7 +1,7 @@
-# pan-fetcher
+# pan-fetcher · 115 网盘 RSS BT 下载订阅工具
 
 <p align="center">
-  <strong>115 网盘 · RSS 订阅 · 聚合搜索 · 一站式媒体自动化</strong>
+  <strong>聚合搜索 · 自动订阅 · 离线下载 · 文件管理 · 企业微信通知</strong>
 </p>
 
 <p align="center">
