@@ -3153,7 +3153,13 @@ func (s *Server) autoRunSubscriptions() {
 						}
 					}()
 					if s.Agent != nil && e.Cid != "" {
+						before := globalDedup.SubCount(subKey)
 						s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, subKey)
+						after := globalDedup.SubCount(subKey)
+						newItems := after - before
+						if newItems > 0 {
+							notify.Send(notify.RSSFound(subKey, newItems), ws.NotifyRSS)
+						}
 					}
 				}()
 
@@ -3524,7 +3530,8 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[task] web submitted %d tasks, cid=%s", len(task.Tasks), task.Cid)
-	notify.Send(notify.TaskSubmitted(len(task.Tasks), task.Cid), s.loadWebSettings().NotifyTask)
+	ws := s.loadWebSettings()
+	notify.Send(notify.TaskSubmitted(len(task.Tasks), task.Cid), ws.NotifyLog || ws.NotifyTask)
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","message":"%s"}`, trf(s.langFromAgent(), "tasks_submitted_fmt", len(task.Tasks)))
 }
