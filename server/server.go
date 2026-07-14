@@ -1045,6 +1045,12 @@ var translations = map[string]map[string]string{
 		"update_ok":            "更新完成，服务即将重启",
 		"update_checking":      "正在检查…",
 		"update_new_found":     "发现新版本 %s，当前 %s",
+		"enable_all":           "全部启用",
+		"disable_all":          "全部禁用",
+		"enable_all_confirm":   "确定启用全部订阅？",
+		"disable_all_confirm":  "确定禁用全部订阅？",
+		"clear_all_cache":      "清除全部缓存",
+		"clear_all_cache_confirm": "确定清除全部去重缓存？此操作不可恢复。",
 		"subscribe_search":     "📌 订阅此搜索",
 		"add_rss_sub_title":    "📌 添加 RSS 订阅",
 		"sub_name_label":       "名称",
@@ -1351,6 +1357,12 @@ var translations = map[string]map[string]string{
 		"update_ok":            "Updated successfully, restarting…",
 		"update_checking":      "Checking…",
 		"update_new_found":     "New version %s found (current: %s)",
+		"enable_all":           "Enable All",
+		"disable_all":          "Disable All",
+		"enable_all_confirm":   "Enable all subscriptions?",
+		"disable_all_confirm":  "Disable all subscriptions?",
+		"clear_all_cache":      "Clear All Cache",
+		"clear_all_cache_confirm": "Clear entire dedup cache? This cannot be undone.",
 		"subscribe_search":     "📌 Subscribe This Search",
 		"add_rss_sub_title":    "📌 Add RSS Subscription",
 		"sub_name_label":       "Name",
@@ -1811,6 +1823,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <span style="font-weight:400;font-size:12px;color:var(--muted);margin-left:8px;">{{index .T "no_subs_hint"}}</span>
       </h2>
       {{if .RssSubs}}
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <button onclick="toggleAllSubs(true)" style="margin:0;padding:4px 12px;font-size:12px;background:var(--accent-2);">{{index .T "enable_all"}}</button>
+        <button onclick="toggleAllSubs(false)" style="margin:0;padding:4px 12px;font-size:12px;background:var(--danger);">{{index .T "disable_all"}}</button>
+        <button onclick="clearAllCache()" style="margin:0;padding:4px 12px;font-size:12px;background:#6b7280;">{{index .T "clear_all_cache"}}</button>
+      </div>
       <table class="tbl">
         <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_status"}}</th><th>{{index .T "cache"}}</th><th></th></tr></thead>
         <tbody>
@@ -1966,6 +1983,26 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             alertModal(e.message);
           }
           btn.disabled=false;
+        }
+        async function toggleAllSubs(enabled){
+          if(!(await confirmAsync(enabled?'{{index .T "enable_all_confirm"}}':'{{index .T "disable_all_confirm"}}')))return;
+          try{
+            var r=await fetch('/subs/toggle-all',{method:'POST',
+              headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+              body:new URLSearchParams({enabled:enabled?'1':'0'})});
+            var j=await r.json();
+            if(j.ok)location.reload();
+            else alertModal(j.msg);
+          }catch(e){alertModal(e.message);}
+        }
+        async function clearAllCache(){
+          if(!(await confirmAsync('{{index .T "clear_all_cache_confirm"}}')))return;
+          try{
+            var r=await fetch('/dedup/clear-all',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}});
+            var j=await r.json();
+            if(j.ok)location.reload();
+            else alertModal(j.msg);
+          }catch(e){alertModal(e.message);}
         }
       </script>
       {{if .Agent}}<div style="margin-top:10px;">
@@ -3223,6 +3260,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/fs/copy", s.authCheck(s.handleFSCopy))
 	mux.HandleFunc("/subs", s.authCheck(s.handleSubscriptions))
 	mux.HandleFunc("/subs/run", s.authCheck(s.handleSubsRun))
+	mux.HandleFunc("/subs/toggle-all", s.authCheck(s.handleSubsToggleAll))
+	mux.HandleFunc("/dedup/clear-all", s.authCheck(s.handleDedupClearAll))
 	mux.HandleFunc("/settings", s.authCheck(s.handleSettings))
 	mux.HandleFunc("/login/qrcode", s.authCheck(s.handleQRLogin))
 	mux.HandleFunc("/login/cookies", s.authCheck(s.handleCookiesLogin))
@@ -4146,6 +4185,7 @@ func (s *Server) handleTorrentClear(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogPage(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")
 	data.Page = "log"
+	data.Logs = logBuf.Lines()
 	dashboardTemplate.Execute(w, data)
 }
 
@@ -5817,6 +5857,44 @@ func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/subs", http.StatusSeeOther)
 }
 
+// handleSubsToggleAll enables or disables all RSS subscriptions.
+func (s *Server) handleSubsToggleAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	enabled := r.FormValue("enabled") == "1"
+	feeds := s.readRssFeeds()
+	for site, entries := range feeds {
+		for i := range entries {
+			entries[i].Enabled = enabled
+		}
+		feeds[site] = entries
+	}
+	s.writeRssFeeds(feeds)
+	lang := s.langFromAgent()
+	msg := tr(lang, "disable_all")
+	if enabled {
+		msg = tr(lang, "enable_all")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, msg+" "+tr(lang, "settings_saved"))
+}
+
+// handleDedupClearAll clears the entire deduplication cache.
+func (s *Server) handleDedupClearAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	for _, subKey := range globalDedup.SubKeys() {
+		globalDedup.ClearSub(subKey)
+	}
+	log.Printf("[dedup] cleared all cache")
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "clear_all_cache"))
+}
+
 func (s *Server) handleSubsDirs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if s.Agent == nil {
@@ -5952,7 +6030,6 @@ func (s *Server) pageDataWithCache(page, message, errMsg string) dashboardData {
 			}
 		}
 	}
-	data.Logs = logBuf.Lines()
 	return data
 }
 
