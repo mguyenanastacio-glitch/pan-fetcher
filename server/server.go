@@ -4439,7 +4439,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info.Latest = release.TagName
-	info.HasUpdate = release.TagName != "" && release.TagName != Version
+	info.HasUpdate = compareVersion(release.TagName, Version) > 0
 	info.URL = release.HTMLURL
 
 	w.Header().Set("Content-Type", "application/json")
@@ -4609,6 +4609,27 @@ func extractFromZip(r io.Reader, name string) ([]byte, error) {
 	// ZIP archives are not yet supported via streaming — use tar.gz on Linux/macOS
 	_ = data
 	return nil, fmt.Errorf("zip extraction not supported, use tar.gz")
+}
+
+// compareVersion compares two semver strings (e.g. "v0.4.0" vs "v0.3.3").
+// Returns positive if a > b, zero if equal, negative if a < b.
+func compareVersion(a, b string) int {
+	parse := func(s string) []int {
+		s = strings.TrimPrefix(s, "v")
+		parts := strings.Split(s, ".")
+		nums := make([]int, len(parts))
+		for i, p := range parts {
+			nums[i], _ = strconv.Atoi(p)
+		}
+		return nums
+	}
+	va, vb := parse(a), parse(b)
+	for i := 0; i < len(va) && i < len(vb); i++ {
+		if va[i] != vb[i] {
+			return va[i] - vb[i]
+		}
+	}
+	return len(va) - len(vb)
 }
 
 // doRestart spawns a new process and exits.
