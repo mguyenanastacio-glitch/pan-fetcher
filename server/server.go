@@ -2811,14 +2811,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             cnt.textContent='0';
             return;
           }
-          var jkActiveIds=new Set();
-          var rows=document.querySelectorAll('#idx-active tbody tr');
-          rows.forEach(function(r){
-            var tds=r.querySelectorAll('td');
-            if(tds.length>4 && tds[4].textContent.trim()==='Jackett'){
-              jkActiveIds.add(tds[2].textContent.trim());
-            }
-          });
+          // Use server-provided active list (always accurate, not stale DOM)
+          var jkActiveIds=new Set(j.active||[]);
           cnt.textContent=j.data.length;
           var h='<table class="tbl"><thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
           j.data.forEach(function(x){
@@ -5810,12 +5804,21 @@ func (s *Server) handleJackettList(w http.ResponseWriter, r *http.Request) {
 
 	jk := s.refreshJackettCache()
 	if len(jk) == 0 {
-		fmt.Fprint(w, `{"ok":true,"data":[]}`)
+		fmt.Fprint(w, `{"ok":true,"data":[],"active":[]}`)
 		return
 	}
 
+	// Build active ID list from server state (always up-to-date)
+	s.jackettActiveMu.Lock()
+	activeIDs := make([]string, 0, len(s.jackettActive))
+	for id := range s.jackettActive {
+		activeIDs = append(activeIDs, id)
+	}
+	s.jackettActiveMu.Unlock()
+
 	data, _ := json.Marshal(jk)
-	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+	activeJSON, _ := json.Marshal(activeIDs)
+	fmt.Fprintf(w, `{"ok":true,"data":%s,"active":%s}`, data, activeJSON)
 }
 
 // handleJackettAll returns ALL Jackett indexers (including unconfigured).
