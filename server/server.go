@@ -2323,6 +2323,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       {{if .SavedSearches}}<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);"><h3 style="margin:0 0 8px;">{{index .T "saved_searches_title"}}</h3>{{range .SavedSearches}}<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><span style="flex:1;">🔍 {{.Query}}{{if .Category}} <span style="color:var(--muted);font-size:11px;">[{{.Category}}]</span>{{end}}</span><form action="/search" method="post" style="display:inline;"><input type="hidden" name="q" value="{{.Query}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="sort" value="{{.Sort}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">{{index $.T "search_btn_sm"}}</button></form><form action="/search" method="post" style="display:inline;"><input type="hidden" name="action" value="unsubscribe"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">{{index $.T "delete_btn"}}</button></form></div>{{end}}</div>{{end}}
     </div>
     <script>
+    // Pagination state — must be declared before IIFE below
+    var searchTotal={{.SearchTotal}};
+    var pageSize={{.PageSize}};
+    var currentPage=1;
+    var totalPages=1;
+    var searchDone=false;
+
+    // Calculate initial totalPages
+    if(searchTotal>0){totalPages=Math.ceil(searchTotal/pageSize);}
+    else{
+      var rows=document.querySelectorAll('#search-results tbody tr');
+      if(rows.length>0){totalPages=Math.max(1,Math.ceil(rows.length/pageSize));}
+    }
+
     // Persist search state across page navigations
     (function(){
       var key='pan-fetcher-search';
@@ -2436,19 +2450,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         });
       }
       var pendingMagnet='';
-      var searchTotal={{.SearchTotal}};
-      var pageSize={{.PageSize}};
-      var currentPage=1;
-      var totalPages=1;
-      var searchDone=false;
 
-      // Calculate initial totalPages if we have results
-      if(searchTotal>0){totalPages=Math.ceil(searchTotal/pageSize);}
-      else{
-        // Unknown total — count rows in the table as minimum
-        var rows=document.querySelectorAll('#search-results tbody tr');
-        if(rows.length>0){totalPages=Math.max(1,Math.ceil((rows.length+(currentPage-1)*pageSize)/pageSize));}
-      }
+      // Note: searchTotal, pageSize, currentPage, totalPages, searchDone
+      // are declared above in the search page template section.
 
       function buildRowHTML(item){
         var title=item.page_url?'<a href="'+item.page_url+'" target="_blank">'+(item.title||'')+'</a>':(item.title||'');
