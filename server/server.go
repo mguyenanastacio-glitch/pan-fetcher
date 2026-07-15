@@ -587,20 +587,24 @@ func (s *Server) saveJackettEnabled() {
 }
 
 // handleJKAddToJackett adds an indexer to the linked Jackett instance via API.
-func (s *Server) handleJKAddToJackett(w http.ResponseWriter, r *http.Request, id string) {
+// writeJSON writes a JSON object to the response, properly escaping the message.
+func writeJSON(w http.ResponseWriter, ok bool, msg string) {
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": ok, "msg": msg})
+}
+
+func (s *Server) handleJKAddToJackett(w http.ResponseWriter, r *http.Request, id string) {
 	if s.JackettURL == "" || s.JackettAPIKey == "" {
-		fmt.Fprint(w, `{"ok":false,"msg":"Jackett not configured"}`)
+		writeJSON(w, false, "Jackett not configured")
 		return
 	}
 	cfg := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
 	if err := jackett.AddIndexer(cfg, id); err != nil {
 		log.Printf("[jackett] add %s failed: %v", id, err)
-		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		writeJSON(w, false, err.Error())
 		return
 	}
 	log.Printf("[jackett] %s added successfully", id)
-	// Also mark as locally active and refresh cache
 	s.jackettActiveMu.Lock()
 	if s.jackettActive == nil {
 		s.jackettActive = make(map[string]bool)
@@ -608,7 +612,6 @@ func (s *Server) handleJKAddToJackett(w http.ResponseWriter, r *http.Request, id
 	s.jackettActive[id] = true
 	s.saveJackettEnabled()
 	s.jackettActiveMu.Unlock()
-	// Refresh cache in background
 	go func() {
 		if jk, err := jackett.ListIndexers(cfg); err == nil {
 			s.jackettCacheMu.Lock()
@@ -616,31 +619,27 @@ func (s *Server) handleJKAddToJackett(w http.ResponseWriter, r *http.Request, id
 			s.jackettCacheMu.Unlock()
 		}
 	}()
-	fmt.Fprint(w, `{"ok":true,"msg":"Added to Jackett"}`)
+	writeJSON(w, true, "Added to Jackett")
 }
 
-// handleJKRemoveFromJackett removes an indexer from the linked Jackett instance via API.
 func (s *Server) handleJKRemoveFromJackett(w http.ResponseWriter, r *http.Request, id string) {
-	w.Header().Set("Content-Type", "application/json")
 	if s.JackettURL == "" || s.JackettAPIKey == "" {
-		fmt.Fprint(w, `{"ok":false,"msg":"Jackett not configured"}`)
+		writeJSON(w, false, "Jackett not configured")
 		return
 	}
 	cfg := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
 	if err := jackett.DeleteIndexer(cfg, id); err != nil {
 		log.Printf("[jackett] remove %s failed: %v", id, err)
-		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		writeJSON(w, false, err.Error())
 		return
 	}
 	log.Printf("[jackett] %s removed successfully", id)
-	// Also mark as locally inactive
 	s.jackettActiveMu.Lock()
 	if s.jackettActive != nil {
 		delete(s.jackettActive, id)
 		s.saveJackettEnabled()
 	}
 	s.jackettActiveMu.Unlock()
-	// Refresh cache in background
 	go func() {
 		if jk, err := jackett.ListIndexers(cfg); err == nil {
 			s.jackettCacheMu.Lock()
@@ -648,7 +647,7 @@ func (s *Server) handleJKRemoveFromJackett(w http.ResponseWriter, r *http.Reques
 			s.jackettCacheMu.Unlock()
 		}
 	}()
-	fmt.Fprint(w, `{"ok":true,"msg":"Removed from Jackett"}`)
+	writeJSON(w, true, "Removed from Jackett")
 }
 
 // ---------- log buffer ----------
@@ -1119,8 +1118,7 @@ var translations = map[string]map[string]string{
 		"update_no_asset":      "未找到匹配的二进制文件",
 		"update_download_failed":"下载更新失败",
 		"update_ok":            "更新完成，服务即将重启",
-		"update_install_failed":"安装失败（可能文件系统只读）",
-		"update_saved_to":      "已保存到 %s，请手动替换",
+		"update_need_sudo":     "需要管理员权限。请复制以下命令在终端执行：",
 		"update_checking":      "正在检查…",
 		"update_new_found":     "发现新版本 %s，当前 %s",
 		"enable_all":           "全部启用",
@@ -1436,8 +1434,7 @@ var translations = map[string]map[string]string{
 		"update_no_asset":      "No matching binary found",
 		"update_download_failed":"Download failed",
 		"update_ok":            "Updated successfully, restarting…",
-		"update_install_failed":"Install failed (read-only filesystem?)",
-		"update_saved_to":      "New binary saved to %s. Please move it to your install location manually.",
+		"update_need_sudo":     "Permission denied. Run this command in a terminal:",
 		"update_checking":      "Checking…",
 		"update_new_found":     "New version %s found (current: %s)",
 		"enable_all":           "Enable All",
@@ -2991,7 +2988,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             var r=await fetch('/settings/update',{method:'POST'});
             var j=await r.json();
             if(j.ok){sp.textContent='✓ '+j.msg;sp.style.color='var(--accent-2)';setTimeout(function(){location.reload();},3000);}
-            else{sp.textContent='✗ '+j.msg;sp.style.color='var(--danger)';}
+            else if(j.action==='sudo'){
+              sp.innerHTML='<span style="color:var(--warn);">'+j.msg+'</span><br><code style="display:block;margin-top:6px;padding:6px 10px;background:#1e1e1e;color:#0f0;border-radius:6px;font-size:12px;word-break:break-all;cursor:pointer;" onclick="navigator.clipboard.writeText(this.textContent).then(function(){this.style.background=\\'#333\\'})" title="点击复制">'+j.cmd+'</code>';
+            }else{sp.textContent='✗ '+j.msg;sp.style.color='var(--danger)';}
           }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
         }
       </script>
@@ -4931,19 +4930,21 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "write temp: " + err.Error()})
 		return
 	}
-	defer os.Remove(tmpPath)
 
-	// Try to replace the executable (may fail on read-only filesystems)
+	// Try to replace the executable (may fail due to permissions)
 	if err := copyFile(tmpPath, exe); err != nil {
-		fallbackPath := filepath.Join(".", binaryName)
-		if e2 := os.Rename(tmpPath, fallbackPath); e2 != nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_install_failed") + ": " + err.Error()})
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": trf(lang, "update_saved_to", fallbackPath)})
+		// Keep temp file and give user a sudo command to install
+		cmd := fmt.Sprintf("sudo mv \"%s\" \"%s\" && sudo systemctl restart pan-fetcher", tmpPath, exe)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":     false,
+			"msg":    tr(lang, "update_need_sudo"),
+			"action": "sudo",
+			"cmd":    cmd,
+		})
 		return
 	}
-
+	os.Remove(tmpPath)
+	// Success — restart
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
 
 	// Restart after response
@@ -5604,6 +5605,17 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 		}
 		action := r.FormValue("action")
 		id := r.FormValue("id")
+
+		// Jackett API actions don't need local indexer manager
+		switch action {
+		case "jk_add_to_jackett":
+			s.handleJKAddToJackett(w, r, id)
+			return
+		case "jk_remove_from_jackett":
+			s.handleJKRemoveFromJackett(w, r, id)
+			return
+		}
+
 		if s.IdxMgr == nil {
 			http.Redirect(w, r, "/indexers", http.StatusSeeOther)
 			return
@@ -5634,12 +5646,6 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 			}
 			s.jackettActiveMu.Unlock()
 			log.Printf("[jackett] %s deactivated", id)
-		case "jk_add_to_jackett":
-			s.handleJKAddToJackett(w, r, id)
-			return
-		case "jk_remove_from_jackett":
-			s.handleJKRemoveFromJackett(w, r, id)
-			return
 		case "activate_batch":
 			ids := r.Form["ids"]
 			for _, id := range ids {
