@@ -380,36 +380,102 @@ func Search(cfg Config, query string, categories []int, offset int) ([]Result, e
 
 // AddIndexer configures an indexer in Jackett by its ID.
 // Uses Jackett's admin API: POST /api/v2.0/indexers
+// AddIndexer adds/activates an indexer in Jackett by fetching its default config
+// and posting it to the indexer's config endpoint.
 func AddIndexer(cfg Config, id string) error {
-	u, err := url.Parse(strings.TrimRight(cfg.URL, "/") + "/api/v2.0/indexers")
+	baseURL := strings.TrimRight(cfg.URL, "/")
+
+	// Step 1: GET default config from Jackett
+	cfgURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id + "/config")
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	q := u.Query()
+	q := cfgURL.Query()
 	q.Set("apikey", cfg.APIKey)
-	u.RawQuery = q.Encode()
+	cfgURL.RawQuery = q.Encode()
 
-	// Jackett expects form-encoded data with the indexer ID
-	form := url.Values{}
-	form.Set("id", id)
-	form.Set("configured", "true")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 
-	req, err := http.NewRequest("POST", u.String(), strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "GET", cfgURL.String(), nil)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return fmt.Errorf("create GET request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return fmt.Errorf("get config: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("HTTP %d getting config: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	configJSON, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	// Step 2: POST config back to add the indexer
+	postURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id + "/config")
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	q2 := postURL.Query()
+	q2.Set("apikey", cfg.APIKey)
+	postURL.RawQuery = q2.Encode()
+
+	postReq, err := http.NewRequestWithContext(ctx, "POST", postURL.String(), strings.NewReader(string(configJSON)))
+	if err != nil {
+		return fmt.Errorf("create POST request: %w", err)
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("Accept", "application/json")
+
+	postResp, err := client.Do(postReq)
+	if err != nil {
+		return fmt.Errorf("add indexer: %w", err)
+	}
+	defer postResp.Body.Close()
+
+	if postResp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(postResp.Body, 1024))
+		return fmt.Errorf("HTTP %d adding indexer: %s", postResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// DeleteIndexer removes an indexer from Jackett.
+func DeleteIndexer(cfg Config, id string) error {
+	baseURL := strings.TrimRight(cfg.URL, "/")
+	delURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	q := delURL.Query()
+	q.Set("apikey", cfg.APIKey)
+	delURL.RawQuery = q.Encode()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", delURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create DELETE request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete indexer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("HTTP %d deleting indexer: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }

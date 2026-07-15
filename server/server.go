@@ -586,6 +586,71 @@ func (s *Server) saveJackettEnabled() {
 	os.WriteFile("jackett-enabled.json", data, 0644)
 }
 
+// handleJKAddToJackett adds an indexer to the linked Jackett instance via API.
+func (s *Server) handleJKAddToJackett(w http.ResponseWriter, r *http.Request, id string) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.JackettURL == "" || s.JackettAPIKey == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"Jackett not configured"}`)
+		return
+	}
+	cfg := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+	if err := jackett.AddIndexer(cfg, id); err != nil {
+		log.Printf("[jackett] add %s failed: %v", id, err)
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+	log.Printf("[jackett] %s added successfully", id)
+	// Also mark as locally active and refresh cache
+	s.jackettActiveMu.Lock()
+	if s.jackettActive == nil {
+		s.jackettActive = make(map[string]bool)
+	}
+	s.jackettActive[id] = true
+	s.saveJackettEnabled()
+	s.jackettActiveMu.Unlock()
+	// Refresh cache in background
+	go func() {
+		if jk, err := jackett.ListIndexers(cfg); err == nil {
+			s.jackettCacheMu.Lock()
+			s.jackettCache = jk
+			s.jackettCacheMu.Unlock()
+		}
+	}()
+	fmt.Fprint(w, `{"ok":true,"msg":"Added to Jackett"}`)
+}
+
+// handleJKRemoveFromJackett removes an indexer from the linked Jackett instance via API.
+func (s *Server) handleJKRemoveFromJackett(w http.ResponseWriter, r *http.Request, id string) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.JackettURL == "" || s.JackettAPIKey == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"Jackett not configured"}`)
+		return
+	}
+	cfg := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+	if err := jackett.DeleteIndexer(cfg, id); err != nil {
+		log.Printf("[jackett] remove %s failed: %v", id, err)
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+	log.Printf("[jackett] %s removed successfully", id)
+	// Also mark as locally inactive
+	s.jackettActiveMu.Lock()
+	if s.jackettActive != nil {
+		delete(s.jackettActive, id)
+		s.saveJackettEnabled()
+	}
+	s.jackettActiveMu.Unlock()
+	// Refresh cache in background
+	go func() {
+		if jk, err := jackett.ListIndexers(cfg); err == nil {
+			s.jackettCacheMu.Lock()
+			s.jackettCache = jk
+			s.jackettCacheMu.Unlock()
+		}
+	}()
+	fmt.Fprint(w, `{"ok":true,"msg":"Removed from Jackett"}`)
+}
+
 // ---------- log buffer ----------
 
 type logBuffer struct {
@@ -2568,7 +2633,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           if(Array.isArray(v)) v.forEach(x=>form.append(k,x));
           else form.set(k,v);
         }
-        await fetch('/indexers',{method:'POST',body:form,headers:{'X-Requested-With':'XMLHttpRequest'}});
+        let r=await fetch('/indexers',{method:'POST',body:form,headers:{'X-Requested-With':'XMLHttpRequest'}});
+        try{return await r.json();}catch(e){return {};}
       }
 
       async function testIdx(id,name){
@@ -2788,12 +2854,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       function jkAddToJackett(id){
-        window.open('{{.JackettURL}}/ui/indexers#add','_blank');
+        apiPost('jk_add_to_jackett',{id}).then(function(r){
+          if(r.ok){location.reload();}else{alert('添加失败: '+r.msg);}
+        });
       }
 
       function jkRemoveFromJackett(id){
         if(!confirm('从 Jackett 中移除此索引器？'))return;
-        window.open('{{.JackettURL}}/ui/indexers','_blank');
+        apiPost('jk_remove_from_jackett',{id}).then(function(r){
+          if(r.ok){location.reload();}else{alert('移除失败: '+r.msg);}
+        });
       }
       async function jkActivate(id){
         await apiPost('jk_activate',{id});
@@ -5564,6 +5634,12 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 			}
 			s.jackettActiveMu.Unlock()
 			log.Printf("[jackett] %s deactivated", id)
+		case "jk_add_to_jackett":
+			s.handleJKAddToJackett(w, r, id)
+			return
+		case "jk_remove_from_jackett":
+			s.handleJKRemoveFromJackett(w, r, id)
+			return
 		case "activate_batch":
 			ids := r.Form["ids"]
 			for _, id := range ids {
