@@ -2329,8 +2329,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var pgKey='pan-fetcher-page';
       {{if .SearchQuery}}
       sessionStorage.setItem(key,document.querySelector('.card.panel').innerHTML);
-      // Save pagination state
-      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,searchOffset:searchOffset||{{len .SearchResults}},pageSize:pageSize}));
+      // Save pagination state AND query params so goToPage works on re-entry
+      var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
+      sessionStorage.setItem('pan-fetcher-query',searchFormData);
+      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
       {{else}}
       var saved=sessionStorage.getItem(key);
       if(saved){
@@ -2398,9 +2400,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     <!-- shared utility functions -->
     <script>
+      function refreshSearch(){
+        sessionStorage.removeItem('pan-fetcher-search');
+        sessionStorage.removeItem('pan-fetcher-page');
+        sessionStorage.removeItem('pan-fetcher-query');
+        location.href='/search';
+      }
       function clearSearch(){
         sessionStorage.removeItem('pan-fetcher-search');
         sessionStorage.removeItem('pan-fetcher-page');
+        sessionStorage.removeItem('pan-fetcher-query');
         location.href='/search';
       }
       function toggleSubForm(){
@@ -2467,8 +2476,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         if(page<1||page>totalPages||page===currentPage)return;
         var bar=document.getElementById('pagination-bar');
         if(bar)bar.innerHTML='<span style="font-size:12px;color:var(--muted);">{{index .T "page_loading"}}</span>';
+        // Use saved query params if current form is empty (re-entered page)
         var form=document.getElementById('search-form');
         var fd=new URLSearchParams(new FormData(form));
+        if(!fd.get('q')){
+          var savedQ=sessionStorage.getItem('pan-fetcher-query');
+          if(savedQ) fd=new URLSearchParams(savedQ);
+        }
         fd.set('offset',(page-1)*pageSize);
         try{
           var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
@@ -2482,7 +2496,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           currentPage=page;
           renderPagination();
           // Persist pagination state
-          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,searchOffset:page*pageSize,pageSize:pageSize}));
+          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
+          // Also update saved query params
+          var form2=document.getElementById('search-form');
+          var fd2=new URLSearchParams(new FormData(form2));
+          if(fd2.get('q')) sessionStorage.setItem('pan-fetcher-query',fd2.toString());
           // Scroll to top of results
           document.getElementById('search-results').scrollIntoView({behavior:'smooth',block:'start'});
         }catch(e){renderPagination();}
@@ -2675,6 +2693,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       async function deactivateIdx(id){
+        var row=document.getElementById('row-'+id);
+        if(row) row.style.display='none';
         await apiPost('deactivate',{id});
         location.reload();
       }
@@ -2706,6 +2726,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       async function activateSelected(){
         let checks=document.querySelectorAll('#idx-library input[type="checkbox"]:checked');
         if(checks.length===0) return;
+        checks.forEach(function(c){var row=document.getElementById('lib-'+c.value);if(row)row.style.opacity='0.4';});
         let ids=[];
         checks.forEach(c=>ids.push(c.value));
         await apiPost('activate_batch',{ids:ids});
@@ -2737,6 +2758,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       async function activateSingle(id){
+        var row=document.getElementById('lib-'+id);
+        if(row) row.style.opacity='0.4';
         await apiPost('activate',{id});
         location.reload();
       }
@@ -4769,14 +4792,14 @@ func (s *Server) handleTestJackett(w http.ResponseWriter, r *http.Request) {
 	url := strings.TrimSpace(r.FormValue("url"))
 	apikey := strings.TrimSpace(r.FormValue("apikey"))
 	if url == "" || apikey == "" {
-		fmt.Fprint(w, `{"ok":false,"msg":"`+tr(s.langFromAgent(), "jk_test_empty")+`"}`)
+		writeJSON(w, false, tr(s.langFromAgent(), "jk_test_empty"))
 		return
 	}
 	if err := jackett.Test(jackett.Config{URL: url, APIKey: apikey}); err != nil {
-		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		writeJSON(w, false, err.Error())
 		return
 	}
-	fmt.Fprintf(w, `{"ok":true,"msg":"%s"}`, tr(s.langFromAgent(), "jk_test_ok"))
+	writeJSON(w, true, tr(s.langFromAgent(), "jk_test_ok"))
 }
 
 func (s *Server) handleTest115(w http.ResponseWriter, r *http.Request) {
