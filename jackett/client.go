@@ -49,32 +49,58 @@ func Login(cfg Config) error {
 	form := url.Values{}
 	form.Set("password", password)
 
+	// Use a client that does NOT follow redirects so we can capture the auth cookie
+	jarClient := &http.Client{
+		Timeout: 30 * time.Second,
+		Jar:     cookieJar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // don't follow redirects
+		},
+	}
+	// Copy proxy settings from the main client
+	if t, ok := client.Transport.(*http.Transport); ok {
+		jarClient.Transport = t
+	}
+
 	req, err := http.NewRequest("POST", loginURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("login request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := client.Do(req)
+	resp, err := jarClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Jackett redirects to Dashboard on success, back to Login on failure
-	if resp.StatusCode == http.StatusOK {
-		cookieMu.Lock()
-		cookieJar.SetCookies(req.URL, resp.Cookies())
-		// Also set cookies on the base URL for API calls
-		baseURL, _ := url.Parse(strings.TrimRight(cfg.URL, "/"))
-		cookieJar.SetCookies(baseURL, resp.Cookies())
-		client.Jar = cookieJar
-		cookieMu.Unlock()
-		return nil
+	// Jackett returns 302 to /UI/Dashboard on success. Failure also returns 302
+	// to /UI/Dashboard but without setting the auth cookie.
+	// Detect success by checking if we got a "Jackett" auth cookie.
+	cookieMu.Lock()
+	cookieJar.SetCookies(req.URL, resp.Cookies())
+	baseURL, _ := url.Parse(strings.TrimRight(cfg.URL, "/"))
+	cookieJar.SetCookies(baseURL, resp.Cookies())
+	cookieMu.Unlock()
+
+	// Verify we have an auth cookie
+	baseURL2, _ := url.Parse(strings.TrimRight(cfg.URL, "/"))
+	hasAuth := false
+	for _, c := range cookieJar.Cookies(baseURL2) {
+		if c.Name == "Jackett" {
+			hasAuth = true
+			break
+		}
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	return fmt.Errorf("login failed (HTTP %d): %s — check admin password", resp.StatusCode, strings.TrimSpace(string(body)))
+	if !hasAuth {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("login failed — no auth cookie returned. Check admin password (HTTP %d: %s)", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Apply the authenticated jar to the main client
+	client.Jar = cookieJar
+	return nil
 }
 
 // Config holds Jackett connection settings.
