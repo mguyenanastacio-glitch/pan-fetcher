@@ -57,6 +57,7 @@ type IndexerInfo struct {
 	Type        string `json:"type"`
 	Description string `json:"description"`
 	Status      int    `json:"status"`
+	Configured  bool   `json:"configured,omitempty"`
 }
 
 // rss is the Jackett/Prowlarr RSS XML structure.
@@ -202,6 +203,73 @@ func ListIndexers(cfg Config) ([]IndexerInfo, error) {
 			Type:        idx.Type,
 			Description: idx.Description,
 			Status:      1,
+		})
+	}
+	return indexers, nil
+}
+
+// ListAllIndexers returns ALL indexers (including unconfigured) from a Jackett instance.
+func ListAllIndexers(cfg Config) ([]IndexerInfo, error) {
+	u, err := url.Parse(strings.TrimRight(cfg.URL, "/") + "/api/v2.0/indexers/all/results/torznab/api")
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("apikey", cfg.APIKey)
+	q.Set("t", "indexers")
+	// No configured filter — return all
+	u.RawQuery = q.Encode()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	type idxXML struct {
+		XMLName     xml.Name `xml:"indexer"`
+		ID          string   `xml:"id,attr"`
+		Configured  string   `xml:"configured,attr"`
+		Title       string   `xml:"title"`
+		Description string   `xml:"description"`
+		Link        string   `xml:"link"`
+		Language    string   `xml:"language"`
+		Type        string   `xml:"type"`
+	}
+	type indexersXML struct {
+		XMLName  xml.Name `xml:"indexers"`
+		Indexers []idxXML `xml:"indexer"`
+	}
+
+	var data indexersXML
+	if err := xml.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("xml decode: %w", err)
+	}
+
+	var indexers []IndexerInfo
+	for _, idx := range data.Indexers {
+		indexers = append(indexers, IndexerInfo{
+			ID:          idx.ID,
+			Name:        idx.Title,
+			SiteLink:    idx.Link,
+			Language:    idx.Language,
+			Type:        idx.Type,
+			Description: idx.Description,
+			Status:      1,
+			Configured:  idx.Configured == "true",
 		})
 	}
 	return indexers, nil

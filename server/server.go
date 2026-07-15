@@ -1062,6 +1062,8 @@ var translations = map[string]map[string]string{
 		"disable_all_confirm":  "确定禁用全部订阅？",
 		"clear_all_cache":      "清除全部缓存",
 		"clear_all_cache_confirm": "确定清除全部去重缓存？此操作不可恢复。",
+		"jk_show_all":          "显示全部",
+		"jk_show_configured":   "仅显示已配置",
 		"subscribe_search":     "📌 订阅此搜索",
 		"add_rss_sub_title":    "📌 添加 RSS 订阅",
 		"sub_name_label":       "名称",
@@ -1374,6 +1376,8 @@ var translations = map[string]map[string]string{
 		"disable_all_confirm":  "Disable all subscriptions?",
 		"clear_all_cache":      "Clear All Cache",
 		"clear_all_cache_confirm": "Clear entire dedup cache? This cannot be undone.",
+		"jk_show_all":          "Show All",
+		"jk_show_configured":   "Configured Only",
 		"subscribe_search":     "📌 Subscribe This Search",
 		"add_rss_sub_title":    "📌 Add RSS Subscription",
 		"sub_name_label":       "Name",
@@ -2242,17 +2246,22 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     // Persist search state across page navigations
     (function(){
       var key='pan-fetcher-search';
+      var pgKey='pan-fetcher-page';
       {{if .SearchQuery}}
       sessionStorage.setItem(key,document.querySelector('.card.panel').innerHTML);
+      // Save pagination state
+      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,searchOffset:searchOffset||{{len .SearchResults}},pageSize:pageSize}));
       {{else}}
       var saved=sessionStorage.getItem(key);
       if(saved){
         var card=document.querySelector('.card.panel');
         if(card&&!document.querySelector('#search-form'))return;
         if(card)card.innerHTML=saved;
-        // Clear pagination bar after restore (will be re-rendered)
-        var bar=document.getElementById('pagination-bar');
-        if(bar)bar.innerHTML='';
+        // Restore pagination state
+        var pgState=sessionStorage.getItem(pgKey);
+        if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage;totalPages=ps.totalPages;searchTotal=ps.searchTotal;pageSize=ps.pageSize||50;searchOffset=ps.searchOffset||currentPage*pageSize;}catch(e){}}
+        // Re-render pagination bar
+        renderPagination();
       }
       {{end}}
       // Apply keyword filter on load (deferred for script load order)
@@ -2311,6 +2320,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <script>
       function clearSearch(){
         sessionStorage.removeItem('pan-fetcher-search');
+        sessionStorage.removeItem('pan-fetcher-page');
         location.href='/search';
       }
       function toggleSubForm(){
@@ -2391,6 +2401,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           totalPages=Math.max(1,Math.ceil(searchTotal/pageSize));
           currentPage=page;
           renderPagination();
+          // Persist pagination state
+          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,searchOffset:page*pageSize,pageSize:pageSize}));
           // Scroll to top of results
           document.getElementById('search-results').scrollIntoView({behavior:'smooth',block:'start'});
         }catch(e){renderPagination();}
@@ -2535,6 +2547,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <div class="card panel" style="margin-top:16px;">
       <h2>{{index .T "idx_lib_jackett"}} (<span id="jk-count">…</span>) 
         <span id="jk-batch-btn"></span>
+        <button onclick="loadJackettLib(true)" id="jk-all-btn" style="margin:0 0 0 8px;padding:2px 10px;font-size:12px;background:var(--muted);">{{index .T "jk_show_all"}}</button>
         {{if not .JackettURL}}<a href="/settings" style="font-size:12px;margin-left:8px;color:var(--accent);">⚙ {{index .T "jk_lib_config"}}</a>{{end}}
       </h2>
       <div id="jk-content"><span class="hint">⏳ 加载中...</span></div>
@@ -2682,18 +2695,22 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         );
       }
       // Load Jackett indexers async
-      async function loadJackettLib(){
+      async function loadJackettLib(showAll){
         var ct=document.getElementById('jk-content');
         var cnt=document.getElementById('jk-count');
+        var allBtn=document.getElementById('jk-all-btn');
+        var url=showAll?'/indexers/jackett/all':'/indexers/jackett';
         try{
-          var r=await fetch('/indexers/jackett');
+          var r=await fetch(url);
           var j=await r.json();
           if(!j.ok||!j.data||!j.data.length){
             ct.innerHTML='<div class="hint">{{index .T "jk_lib_empty"}}</div>';
             cnt.textContent='0';
+            if(allBtn)allBtn.textContent='{{index .T "jk_show_all"}}';
             return;
           }
-          // Check which Jackett indexers are actually activated (by source column)
+          if(allBtn){allBtn.textContent=showAll?'{{index .T "jk_show_configured"}}':'{{index .T "jk_show_all"}}';allBtn.onclick=function(){loadJackettLib(!showAll);};}
+          // Check which Jackett indexers are actually activated
           var jkActiveIds=new Set();
           var rows=document.querySelectorAll('#idx-active tbody tr');
           rows.forEach(function(r){
@@ -2706,16 +2723,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var h='<table class="tbl"><thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
           j.data.forEach(function(x){
             var isActive=jkActiveIds.has(x.id);
+            var isConfigured=x.configured!==false; // undefined on old API = configured
             h+='<tr id="jk-row-'+x.id+'"'+(isActive?' style="opacity:0.6"':'')+'><td>'+(isActive?'':'<input type="checkbox" name="jk_ids" value="'+x.id+'" style="width:auto;margin:0;">')+'</td>';
             h+='<td>'+(x.site_link?'<a href="'+x.site_link+'" target="_blank">'+x.name+'</a>':'<strong>'+x.name+'</strong>')+(x.description?'<br><small class="muted">'+x.description+'</small>':'')+'</td>';
-            h+='<td class="muted">'+(x.type||'')+'</td>';
+            h+='<td class="muted">'+(x.type||'')+(isConfigured?'':' <span style="color:var(--danger);font-size:10px;">未配置</span>')+'</td>';
             h+='<td class="muted" style="font-size:11px;">'+x.id+'</td>';
             h+='<td class="muted">'+(x.language||'')+'</td>';
             h+='<td style="white-space:nowrap;">';
             if(isActive){
               h+='<span style="font-size:11px;color:var(--accent-2);">已添加</span>';
-            }else{
+            }else if(isConfigured){
               h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到列表">+</button>';
+            }else{
+              h+='<a href="{{.JackettURL}}/ui/indexers" target="_blank" style="font-size:11px;color:var(--accent);">前往配置</a>';
             }
             h+='</td></tr>';
           });
@@ -3477,6 +3497,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/indexers/test", s.authCheck(s.handleIndexerTest))
 	mux.HandleFunc("/indexers/testall", s.authCheck(s.handleIndexerTestAll))
 	mux.HandleFunc("/indexers/jackett", s.authCheck(s.handleJackettList))
+	mux.HandleFunc("/indexers/jackett/all", s.authCheck(s.handleJackettAll))
 	mux.HandleFunc("/indexers/login", s.authCheck(s.handleIndexerLogin))
 	mux.HandleFunc("/indexers/edit", s.authCheck(s.handleIndexerEdit))
 	mux.HandleFunc("/indexers/delete", s.authCheck(s.handleIndexerDelete))
@@ -5597,6 +5618,22 @@ func (s *Server) handleJackettList(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
 }
 
+// handleJackettAll returns ALL Jackett indexers (including unconfigured).
+func (s *Server) handleJackettAll(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.JackettURL == "" || s.JackettAPIKey == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"not configured"}`)
+		return
+	}
+	all, err := jackett.ListAllIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey})
+	if err != nil {
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+	data, _ := json.Marshal(all)
+	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+}
+
 // refreshJackettCache fetches the latest indexer list from Jackett,
 // updates the cache, and prunes stale entries from the active set.
 func (s *Server) refreshJackettCache() []jackett.IndexerInfo {
@@ -5619,11 +5656,16 @@ func (s *Server) refreshJackettCache() []jackett.IndexerInfo {
 		currentIDs[idx.ID] = true
 	}
 
-	// Update cache
+	// Update cache; log only if count changed
 	s.jackettCacheMu.Lock()
+	oldCount := len(s.jackettCache)
 	s.jackettCache = jk
 	s.jackettCacheTime = time.Now()
 	s.jackettCacheMu.Unlock()
+
+	if len(jk) != oldCount {
+		log.Printf("[jackett] loaded %d configured indexers (was %d)", len(jk), oldCount)
+	}
 
 	// Prune stale entries from jackettActive
 	s.jackettActiveMu.Lock()
@@ -5641,7 +5683,6 @@ func (s *Server) refreshJackettCache() []jackett.IndexerInfo {
 	}
 	s.jackettActiveMu.Unlock()
 
-	log.Printf("[jackett] loaded %d configured indexers", len(jk))
 	return jk
 }
 
