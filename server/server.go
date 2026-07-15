@@ -2802,6 +2802,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       async function loadJackettLib(){
         var ct=document.getElementById('jk-content');
         var cnt=document.getElementById('jk-count');
+        if(cnt) cnt.textContent='…';
         try{
           var r=await fetch('/indexers/jackett');
           var j=await r.json();
@@ -2904,10 +2905,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         });
       }
       async function jkActivate(id){
+        // Instant visual feedback
+        var row=document.getElementById('jk-row-'+id);
+        if(row){row.style.opacity='0.5';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<span style="font-size:11px;color:var(--accent-2);">已激活</span> <button onclick="jkRemoveFromJackett(\''+id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';if(td.length>=1)td[0].innerHTML='';}
         await apiPost('jk_activate',{id});
         loadJackettLib();
       }
       async function jkDeactivate(id){
+        var row=document.getElementById('jk-row-'+id);
+        if(row){row.style.opacity='1';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<button onclick="jkActivate(\''+id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到本地列表">+</button> <button onclick="jkRemoveFromJackett(\''+id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';if(td.length>=1)td[0].innerHTML='<input type="checkbox" name="jk_ids" value="'+id+'" style="width:auto;margin:0;">';}
         await apiPost('jk_deactivate',{id});
         loadJackettLib();
       }
@@ -2915,6 +2921,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         var checks=document.querySelectorAll('#jk-content input[type="checkbox"]:checked');
         if(checks.length===0) return;
         for(var c of checks){
+          var id=c.value;
+          var row=document.getElementById('jk-row-'+id);
+          if(row){row.style.opacity='0.5';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<span style="font-size:11px;color:var(--accent-2);">已激活</span> <button onclick="jkRemoveFromJackett(\''+id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';if(td.length>=1)td[0].innerHTML='';}
           await apiPost('jk_activate',{id:c.value});
         }
         loadJackettLib();
