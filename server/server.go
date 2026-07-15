@@ -3056,7 +3056,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             var j=await r.json();
             if(j.ok){sp.textContent='✓ '+j.msg;sp.style.color='var(--accent-2)';setTimeout(function(){location.reload();},3000);}
             else if(j.action==='sudo'){
-              sp.innerHTML='<span style="color:var(--warn);">'+j.msg+'</span><br><code style="display:block;margin-top:6px;padding:6px 10px;background:#1e1e1e;color:#0f0;border-radius:6px;font-size:12px;word-break:break-all;cursor:pointer;" onclick="navigator.clipboard.writeText(this.textContent).then(function(){this.style.background=\\'#333\\'})" title="点击复制">'+j.cmd+'</code>';
+              sp.innerHTML='<span style="color:var(--warn);">'+j.msg+'</span><br><code style="display:block;margin-top:6px;padding:6px 10px;background:#1e1e1e;color:#0f0;border-radius:6px;font-size:12px;word-break:break-all;cursor:pointer;" onclick="var t=this.textContent;navigator.clipboard.writeText(t).then(function(){this.style.background=\'#333\'})" title="点击复制">'+j.cmd+'</code>';
             }else{sp.textContent='✗ '+j.msg;sp.style.color='var(--danger)';}
           }catch(e){sp.textContent='✗ {{index .T "net_error"}}';sp.style.color='var(--danger)';}
         }
