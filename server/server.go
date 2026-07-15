@@ -1063,6 +1063,7 @@ var translations = map[string]map[string]string{
 		"clear_all_cache":      "清除全部缓存",
 		"clear_all_cache_confirm": "确定清除全部去重缓存？此操作不可恢复。",
 		"jk_show_all":          "显示全部",
+		"jk_add_lib":           "添加库",
 		"jk_show_configured":   "仅显示已配置",
 		"subscribe_search":     "📌 订阅此搜索",
 		"add_rss_sub_title":    "📌 添加 RSS 订阅",
@@ -1377,6 +1378,7 @@ var translations = map[string]map[string]string{
 		"clear_all_cache":      "Clear All Cache",
 		"clear_all_cache_confirm": "Clear entire dedup cache? This cannot be undone.",
 		"jk_show_all":          "Show All",
+		"jk_add_lib":           "Add Indexer",
 		"jk_show_configured":   "Configured Only",
 		"subscribe_search":     "📌 Subscribe This Search",
 		"add_rss_sub_title":    "📌 Add RSS Subscription",
@@ -2547,7 +2549,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <div class="card panel" style="margin-top:16px;">
       <h2>{{index .T "idx_lib_jackett"}} (<span id="jk-count">…</span>) 
         <span id="jk-batch-btn"></span>
-        <button onclick="loadJackettLib(true)" id="jk-all-btn" style="margin:0 0 0 8px;padding:2px 10px;font-size:12px;background:var(--muted);">{{index .T "jk_show_all"}}</button>
+        <button onclick="showJKAddModal()" id="jk-add-btn" style="margin:0 0 0 8px;padding:4px 12px;font-size:12px;background:var(--accent-2);">{{index .T "jk_add_lib"}}</button>
         {{if not .JackettURL}}<a href="/settings" style="font-size:12px;margin-left:8px;color:var(--accent);">⚙ {{index .T "jk_lib_config"}}</a>{{end}}
       </h2>
       <div id="jk-content"><span class="hint">⏳ 加载中...</span></div>
@@ -2695,22 +2697,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         );
       }
       // Load Jackett indexers async
-      async function loadJackettLib(showAll){
+      async function loadJackettLib(){
         var ct=document.getElementById('jk-content');
         var cnt=document.getElementById('jk-count');
-        var allBtn=document.getElementById('jk-all-btn');
-        var url=showAll?'/indexers/jackett/all':'/indexers/jackett';
         try{
-          var r=await fetch(url);
+          var r=await fetch('/indexers/jackett');
           var j=await r.json();
           if(!j.ok||!j.data||!j.data.length){
             ct.innerHTML='<div class="hint">{{index .T "jk_lib_empty"}}</div>';
             cnt.textContent='0';
-            if(allBtn)allBtn.textContent='{{index .T "jk_show_all"}}';
             return;
           }
-          if(allBtn){allBtn.textContent=showAll?'{{index .T "jk_show_configured"}}':'{{index .T "jk_show_all"}}';allBtn.onclick=function(){loadJackettLib(!showAll);};}
-          // Check which Jackett indexers are actually activated
           var jkActiveIds=new Set();
           var rows=document.querySelectorAll('#idx-active tbody tr');
           rows.forEach(function(r){
@@ -2723,19 +2720,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var h='<table class="tbl"><thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
           j.data.forEach(function(x){
             var isActive=jkActiveIds.has(x.id);
-            var isConfigured=x.configured!==false; // undefined on old API = configured
             h+='<tr id="jk-row-'+x.id+'"'+(isActive?' style="opacity:0.6"':'')+'><td>'+(isActive?'':'<input type="checkbox" name="jk_ids" value="'+x.id+'" style="width:auto;margin:0;">')+'</td>';
             h+='<td>'+(x.site_link?'<a href="'+x.site_link+'" target="_blank">'+x.name+'</a>':'<strong>'+x.name+'</strong>')+(x.description?'<br><small class="muted">'+x.description+'</small>':'')+'</td>';
-            h+='<td class="muted">'+(x.type||'')+(isConfigured?'':' <span style="color:var(--danger);font-size:10px;">未配置</span>')+'</td>';
+            h+='<td class="muted">'+(x.type||'')+'</td>';
             h+='<td class="muted" style="font-size:11px;">'+x.id+'</td>';
             h+='<td class="muted">'+(x.language||'')+'</td>';
             h+='<td style="white-space:nowrap;">';
             if(isActive){
               h+='<span style="font-size:11px;color:var(--accent-2);">已添加</span>';
-            }else if(isConfigured){
-              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到列表">+</button>';
             }else{
-              h+='<a href="{{.JackettURL}}/ui/indexers" target="_blank" style="font-size:11px;color:var(--accent);">前往配置</a>';
+              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到列表">+</button>';
             }
             h+='</td></tr>';
           });
@@ -2746,6 +2740,50 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           ct.innerHTML='<div class="hint" style="color:var(--danger);">✗ '+e.message+'</div>';
           cnt.textContent='?';
         }
+      }
+
+      // Show modal to add indexers from Jackett's full catalog
+      var jkAllData=[];
+      async function showJKAddModal(){
+        showModal('{{index .T "jk_add_lib"}}',
+          '<div style="margin-bottom:10px;"><input id="jk-add-filter" placeholder="搜索索引器…" style="width:100%;padding:8px;" oninput="filterJKAddList()" autofocus></div>'+
+          '<div id="jk-add-list" style="max-height:50vh;overflow-y:auto;">⏳ 加载中...</div>',
+          [{text:'{{index .T "close_btn"}}',cls:'var(--danger)',cb:function(){closeModal()}}]);
+        try{
+          var r=await fetch('/indexers/jackett/all');
+          var j=await r.json();
+          if(!j.ok||!j.data){document.getElementById('jk-add-list').innerHTML='<span class="hint" style="color:var(--danger);">✗ '+j.msg+'</span>';return;}
+          jkAllData=j.data;
+          renderJKAddList();
+        }catch(e){document.getElementById('jk-add-list').innerHTML='<span class="hint" style="color:var(--danger);">✗ '+e.message+'</span>';}
+      }
+
+      function renderJKAddList(filter){
+        filter=(filter||'').toLowerCase();
+        var h='<table class="tbl"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
+        jkAllData.forEach(function(x){
+          if(filter&&x.name.toLowerCase().indexOf(filter)<0&&x.id.toLowerCase().indexOf(filter)<0)return;
+          h+='<tr><td>'+(x.site_link?'<a href="'+x.site_link+'" target="_blank">'+x.name+'</a>':'<strong>'+x.name+'</strong>')+'</td>';
+          h+='<td class="muted">'+(x.type||'')+'</td>';
+          h+='<td class="muted">'+(x.language||'')+'</td>';
+          h+='<td style="white-space:nowrap;">';
+          if(x.configured){
+            h+='<span style="font-size:11px;color:var(--muted);">已配置</span>';
+          }else{
+            h+='<button onclick="jkAddToJackett(\''+x.id+'\')" style="padding:2px 8px;font-size:11px;margin:0;background:var(--accent-2);">添加</button>';
+          }
+          h+='</td></tr>';
+        });
+        h+='</tbody></table>';
+        document.getElementById('jk-add-list').innerHTML=h||'<div class="hint">没有匹配的索引器</div>';
+      }
+
+      function filterJKAddList(){
+        renderJKAddList(document.getElementById('jk-add-filter').value);
+      }
+
+      function jkAddToJackett(id){
+        window.open('{{.JackettURL}}/ui/indexers','_blank');
       }
       async function jkActivate(id){
         await apiPost('jk_activate',{id});
