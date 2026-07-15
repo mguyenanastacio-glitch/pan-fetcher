@@ -2884,7 +2884,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         showModal('添加索引器','正在向 Jackett 添加 <b>'+id+'</b>…');
         apiPost('jk_add_to_jackett',{id}).then(function(r){
           closeModal();
-          if(r.ok){alertModal('已添加到 Jackett');loadJackettLib();}
+          if(r.ok){location.reload();}
           else{alertModal('添加失败: '+r.msg);}
         });
       }
@@ -2894,22 +2894,22 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         showModal('删除索引器','正在从 Jackett 移除 <b>'+id+'</b>…');
         apiPost('jk_remove_from_jackett',{id}).then(function(r){
           closeModal();
-          if(r.ok){alertModal('已从 Jackett 移除');loadJackettLib();}
+          if(r.ok){location.reload();}
           else{alertModal('移除失败: '+r.msg);}
         });
       }
       async function jkActivate(id){
         // Instant visual feedback
         var row=document.getElementById('jk-row-'+id);
-        if(row){row.style.opacity='0.5';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<span style="font-size:11px;color:var(--accent-2);">已激活</span> <button onclick="jkRemoveFromJackett(\''+id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';if(td.length>=1)td[0].innerHTML='';}
+        if(row){row.style.opacity='0.5';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<span style="font-size:11px;color:var(--accent-2);">已激活</span>';if(td.length>=1)td[0].innerHTML='';}
         await apiPost('jk_activate',{id});
-        loadJackettLib();
+        location.reload();
       }
       async function jkDeactivate(id){
         var row=document.getElementById('jk-row-'+id);
-        if(row){row.style.opacity='1';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<button onclick="jkActivate(\''+id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到本地列表">+</button> <button onclick="jkRemoveFromJackett(\''+id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';if(td.length>=1)td[0].innerHTML='<input type="checkbox" name="jk_ids" value="'+id+'" style="width:auto;margin:0;">';}
+        if(row){row.style.opacity='1';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<button onclick="jkActivate(\''+id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);">+</button>';if(td.length>=1)td[0].innerHTML='<input type="checkbox" name="jk_ids" value="'+id+'" style="width:auto;margin:0;">';}
         await apiPost('jk_deactivate',{id});
-        loadJackettLib();
+        location.reload();
       }
       async function jkActivateSelected(){
         var checks=document.querySelectorAll('#jk-content input[type="checkbox"]:checked');
@@ -2917,10 +2917,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         for(var c of checks){
           var id=c.value;
           var row=document.getElementById('jk-row-'+id);
-          if(row){row.style.opacity='0.5';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<span style="font-size:11px;color:var(--accent-2);">已激活</span> <button onclick="jkRemoveFromJackett(\''+id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';if(td.length>=1)td[0].innerHTML='';}
+          if(row){row.style.opacity='0.5';var td=row.querySelectorAll('td');if(td.length>=6)td[5].innerHTML='<span style="font-size:11px;color:var(--accent-2);">已激活</span>';if(td.length>=1)td[0].innerHTML='';}
           await apiPost('jk_activate',{id:c.value});
         }
-        loadJackettLib();
+        location.reload();
       }
       loadJackettLib();
     </script>
