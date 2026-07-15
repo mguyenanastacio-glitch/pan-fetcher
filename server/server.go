@@ -2794,11 +2794,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             h+='<td class="muted">'+(x.language||'')+'</td>';
             h+='<td style="white-space:nowrap;">';
             if(isActive){
-              h+='<span style="font-size:11px;color:var(--accent-2);">已添加</span> ';
-              h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\')" style="padding:2px 6px;font-size:10px;margin:0;background:var(--danger);" title="从 Jackett 移除">✕</button>';
+              h+='<span style="font-size:11px;color:var(--accent-2);" title="已加入本地列表">已添加</span> ';
             }else{
-              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到列表">+</button>';
+              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="加入本地列表">+</button> ';
             }
+            h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器配置">✕</button>';
             h+='</td></tr>';
           });
           h+='</tbody></table>';

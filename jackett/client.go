@@ -7,13 +7,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-var client = &http.Client{Timeout: 60 * time.Second}
+var (
+	client    = &http.Client{Timeout: 60 * time.Second}
+	cookieMu  sync.Mutex
+	cookieJar *cookiejar.Jar
+)
+
+func init() {
+	cookieJar, _ = cookiejar.New(nil)
+}
 
 // SetProxy configures an HTTP proxy for the Jackett client.
 func SetProxy(proxyURL string) {
@@ -26,6 +36,42 @@ func SetProxy(proxyURL string) {
 			Proxy: http.ProxyURL(u),
 		}
 	}
+}
+
+// Login authenticates with the Jackett admin UI and stores the session cookie.
+// The password is typically the same as the API key unless a separate admin
+// password was configured in Jackett.
+func Login(cfg Config) error {
+	loginURL := strings.TrimRight(cfg.URL, "/") + "/UI/Dashboard"
+	form := url.Values{}
+	form.Set("password", cfg.APIKey)
+
+	req, err := http.NewRequest("POST", loginURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Jackett redirects to Dashboard on success, back to Login on failure
+	if resp.StatusCode == http.StatusOK {
+		cookieMu.Lock()
+		cookieJar.SetCookies(req.URL, resp.Cookies())
+		// Also set cookies on the base URL for API calls
+		baseURL, _ := url.Parse(strings.TrimRight(cfg.URL, "/"))
+		cookieJar.SetCookies(baseURL, resp.Cookies())
+		client.Jar = cookieJar
+		cookieMu.Unlock()
+		return nil
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("login failed (HTTP %d): %s — check admin password", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 // Config holds Jackett connection settings.
@@ -382,20 +428,22 @@ func Search(cfg Config, query string, categories []int, offset int) ([]Result, e
 // Uses Jackett's admin API: POST /api/v2.0/indexers
 // AddIndexer adds/activates an indexer in Jackett by fetching its default config
 // and posting it to the indexer's config endpoint.
+// Requires admin login cookie; calls Login automatically.
 func AddIndexer(cfg Config, id string) error {
-	baseURL := strings.TrimRight(cfg.URL, "/")
+	// Login for admin API access
+	if err := Login(cfg); err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
 
-	// Step 1: GET default config from Jackett
+	baseURL := strings.TrimRight(cfg.URL, "/")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Step 1: GET default config
 	cfgURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id + "/config")
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	q := cfgURL.Query()
-	q.Set("apikey", cfg.APIKey)
-	cfgURL.RawQuery = q.Encode()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", cfgURL.String(), nil)
 	if err != nil {
@@ -419,14 +467,11 @@ func AddIndexer(cfg Config, id string) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	// Step 2: POST config back to add the indexer
+	// Step 2: POST config to add the indexer
 	postURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id + "/config")
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	q2 := postURL.Query()
-	q2.Set("apikey", cfg.APIKey)
-	postURL.RawQuery = q2.Encode()
 
 	postReq, err := http.NewRequestWithContext(ctx, "POST", postURL.String(), strings.NewReader(string(configJSON)))
 	if err != nil {
@@ -449,15 +494,17 @@ func AddIndexer(cfg Config, id string) error {
 }
 
 // DeleteIndexer removes an indexer from Jackett.
+// Requires admin login cookie; calls Login automatically.
 func DeleteIndexer(cfg Config, id string) error {
+	if err := Login(cfg); err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
 	baseURL := strings.TrimRight(cfg.URL, "/")
 	delURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
-	q := delURL.Query()
-	q.Set("apikey", cfg.APIKey)
-	delURL.RawQuery = q.Encode()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
