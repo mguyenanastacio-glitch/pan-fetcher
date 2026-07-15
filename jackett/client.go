@@ -3,6 +3,7 @@ package jackett
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -497,6 +498,11 @@ func AddIndexer(cfg Config, id string) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
+	// Check if this indexer requires credentials that we can't provide
+	if needsManualConfig(configJSON) {
+		return fmt.Errorf("此索引器需要登录凭据（用户名/密码/Cookie），请在 Jackett WebUI 中手动添加: %s/ui/indexers", baseURL)
+	}
+
 	// Step 2: POST config to add the indexer
 	postURL, err := url.Parse(baseURL + "/api/v2.0/indexers/" + id + "/config")
 	if err != nil {
@@ -517,10 +523,57 @@ func AddIndexer(cfg Config, id string) error {
 	defer postResp.Body.Close()
 
 	if postResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(postResp.Body, 1024))
-		return fmt.Errorf("HTTP %d adding indexer: %s", postResp.StatusCode, strings.TrimSpace(string(body)))
+		body, _ := io.ReadAll(postResp.Body)
+		msg := parseJackettError(body)
+		if msg == "" {
+			msg = strings.TrimSpace(string(body))
+		}
+		// Truncate for display
+		if len(msg) > 300 {
+			msg = msg[:300] + "…"
+		}
+		return fmt.Errorf("HTTP %d: %s", postResp.StatusCode, msg)
 	}
 	return nil
+}
+
+// needsManualConfig checks whether the config JSON has required credential
+// fields (username, password, apikey, cookie) that are null/empty,
+// meaning the indexer can't be auto-configured via API.
+func needsManualConfig(configJSON []byte) bool {
+	var items []struct {
+		ID    string      `json:"id"`
+		Type  string      `json:"type"`
+		Value interface{} `json:"value"`
+	}
+	if json.Unmarshal(configJSON, &items) != nil {
+		return false // can't parse, try anyway
+	}
+	for _, it := range items {
+		if it.Type == "hiddendata" || it.Type == "inputtags" || it.Type == "displayinfo" {
+			continue
+		}
+		if it.Value == nil {
+			return true
+		}
+		if s, ok := it.Value.(string); ok && s == "" && (it.ID == "username" || it.ID == "password" || it.ID == "apikey" || it.ID == "cookie") {
+			return true
+		}
+	}
+	return false
+}
+
+// parseJackettError extracts the error message from a Jackett JSON error response.
+// Jackett returns: {"config": [...], "result": "error", "error": "message"}
+func parseJackettError(body []byte) string {
+	var errResp struct {
+		Result string `json:"result"`
+		Error  string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && errResp.Result == "error" {
+		return errResp.Error
+	}
+	return ""
 }
 
 // DeleteIndexer removes an indexer from Jackett.
@@ -551,8 +604,15 @@ func DeleteIndexer(cfg Config, id string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("HTTP %d deleting indexer: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		body, _ := io.ReadAll(resp.Body)
+		msg := parseJackettError(body)
+		if msg == "" {
+			msg = strings.TrimSpace(string(body))
+		}
+		if len(msg) > 300 {
+			msg = msg[:300] + "…"
+		}
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 	return nil
 }
