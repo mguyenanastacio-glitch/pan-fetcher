@@ -1054,6 +1054,8 @@ var translations = map[string]map[string]string{
 		"update_no_asset":      "未找到匹配的二进制文件",
 		"update_download_failed":"下载更新失败",
 		"update_ok":            "更新完成，服务即将重启",
+		"update_install_failed":"安装失败（可能文件系统只读）",
+		"update_saved_to":      "已保存到 %s，请手动替换",
 		"update_checking":      "正在检查…",
 		"update_new_found":     "发现新版本 %s，当前 %s",
 		"enable_all":           "全部启用",
@@ -1369,6 +1371,8 @@ var translations = map[string]map[string]string{
 		"update_no_asset":      "No matching binary found",
 		"update_download_failed":"Download failed",
 		"update_ok":            "Updated successfully, restarting…",
+		"update_install_failed":"Install failed (read-only filesystem?)",
+		"update_saved_to":      "New binary saved to %s. Please move it to your install location manually.",
 		"update_checking":      "Checking…",
 		"update_new_found":     "New version %s found (current: %s)",
 		"enable_all":           "Enable All",
@@ -2727,7 +2731,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             h+='<td class="muted">'+(x.language||'')+'</td>';
             h+='<td style="white-space:nowrap;">';
             if(isActive){
-              h+='<span style="font-size:11px;color:var(--accent-2);">已添加</span>';
+              h+='<span style="font-size:11px;color:var(--accent-2);">已添加</span> ';
+              h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\')" style="padding:2px 6px;font-size:10px;margin:0;background:var(--danger);" title="从 Jackett 移除">✕</button>';
             }else{
               h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到列表">+</button>';
             }
@@ -2783,15 +2788,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       function jkAddToJackett(id){
-        var btn=event.target;
-        btn.disabled=true;btn.textContent='…';
-        fetch('/indexers/jackett/add',{method:'POST',body:new URLSearchParams({id:id}),headers:{'X-Requested-With':'XMLHttpRequest'}})
-          .then(r=>r.json())
-          .then(j=>{
-            if(j.ok){btn.textContent='已添加';btn.style.background='var(--accent-2)';setTimeout(function(){closeModal();loadJackettLib();},800);}
-            else{btn.textContent='失败';btn.style.background='var(--danger)';alertModal(j.msg);btn.textContent='添加';btn.style.background='var(--accent-2)';btn.disabled=false;}
-          })
-          .catch(function(e){btn.textContent='添加';btn.style.background='var(--accent-2)';btn.disabled=false;alertModal(e.message);});
+        window.open('{{.JackettURL}}/ui/indexers#add','_blank');
+      }
+
+      function jkRemoveFromJackett(id){
+        if(!confirm('从 Jackett 中移除此索引器？'))return;
+        window.open('{{.JackettURL}}/ui/indexers','_blank');
       }
       async function jkActivate(id){
         await apiPost('jk_activate',{id});
@@ -4861,9 +4863,14 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.Remove(tmpPath)
 
-	// Copy temp file over the executable
+	// Try to replace the executable (may fail on read-only filesystems)
 	if err := copyFile(tmpPath, exe); err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "install: " + err.Error()})
+		fallbackPath := filepath.Join(".", binaryName)
+		if e2 := os.Rename(tmpPath, fallbackPath); e2 != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_install_failed") + ": " + err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": trf(lang, "update_saved_to", fallbackPath)})
 		return
 	}
 
