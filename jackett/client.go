@@ -377,3 +377,39 @@ func Search(cfg Config, query string, categories []int, offset int) ([]Result, e
 	}
 	return results, nil
 }
+
+// AddIndexer configures an indexer in Jackett by its ID.
+// Uses Jackett's admin API: POST /api/v2.0/indexers
+func AddIndexer(cfg Config, id string) error {
+	u, err := url.Parse(strings.TrimRight(cfg.URL, "/") + "/api/v2.0/indexers")
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("apikey", cfg.APIKey)
+	u.RawQuery = q.Encode()
+
+	// Jackett expects form-encoded data with the indexer ID
+	form := url.Values{}
+	form.Set("id", id)
+	form.Set("configured", "true")
+
+	req, err := http.NewRequest("POST", u.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}

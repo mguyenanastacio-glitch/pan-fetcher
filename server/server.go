@@ -2783,7 +2783,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       function jkAddToJackett(id){
-        window.open('{{.JackettURL}}/ui/indexers','_blank');
+        var btn=event.target;
+        btn.disabled=true;btn.textContent='…';
+        fetch('/indexers/jackett/add',{method:'POST',body:new URLSearchParams({id:id}),headers:{'X-Requested-With':'XMLHttpRequest'}})
+          .then(r=>r.json())
+          .then(j=>{
+            if(j.ok){btn.textContent='已添加';btn.style.background='var(--accent-2)';setTimeout(function(){closeModal();loadJackettLib();},800);}
+            else{btn.textContent='失败';btn.style.background='var(--danger)';alertModal(j.msg);btn.textContent='添加';btn.style.background='var(--accent-2)';btn.disabled=false;}
+          })
+          .catch(function(e){btn.textContent='添加';btn.style.background='var(--accent-2)';btn.disabled=false;alertModal(e.message);});
       }
       async function jkActivate(id){
         await apiPost('jk_activate',{id});
@@ -3536,6 +3544,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/indexers/testall", s.authCheck(s.handleIndexerTestAll))
 	mux.HandleFunc("/indexers/jackett", s.authCheck(s.handleJackettList))
 	mux.HandleFunc("/indexers/jackett/all", s.authCheck(s.handleJackettAll))
+	mux.HandleFunc("/indexers/jackett/add", s.authCheck(s.handleJackettAdd))
 	mux.HandleFunc("/indexers/login", s.authCheck(s.handleIndexerLogin))
 	mux.HandleFunc("/indexers/edit", s.authCheck(s.handleIndexerEdit))
 	mux.HandleFunc("/indexers/delete", s.authCheck(s.handleIndexerDelete))
@@ -5670,6 +5679,27 @@ func (s *Server) handleJackettAll(w http.ResponseWriter, r *http.Request) {
 	}
 	data, _ := json.Marshal(all)
 	fmt.Fprintf(w, `{"ok":true,"data":%s}`, data)
+}
+
+// handleJackettAdd configures an indexer in Jackett via the admin API.
+func (s *Server) handleJackettAdd(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		fmt.Fprint(w, `{"ok":false,"msg":"POST required"}`)
+		return
+	}
+	id := r.FormValue("id")
+	if id == "" {
+		fmt.Fprint(w, `{"ok":false,"msg":"missing id"}`)
+		return
+	}
+	jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+	if err := jackett.AddIndexer(jc, id); err != nil {
+		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
+		return
+	}
+	log.Printf("[jackett] added indexer: %s", id)
+	fmt.Fprint(w, `{"ok":true,"msg":"added"}`)
 }
 
 // refreshJackettCache fetches the latest indexer list from Jackett,
