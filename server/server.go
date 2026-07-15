@@ -2332,7 +2332,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       // Save pagination state AND query params so goToPage works on re-entry
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
-      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
+      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize,searchDone:searchDone}));
       {{else}}
       var saved=sessionStorage.getItem(key);
       if(saved){
@@ -2341,7 +2341,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         if(card)card.innerHTML=saved;
         // Restore pagination state
         var pgState=sessionStorage.getItem(pgKey);
-        if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage;totalPages=ps.totalPages;searchTotal=ps.searchTotal;pageSize=ps.pageSize||50;searchOffset=ps.searchOffset||currentPage*pageSize;}catch(e){}}
+        if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;searchDone=ps.searchDone||false;}catch(e){}}
         // Re-render pagination bar
         renderPagination();
       }
@@ -2439,7 +2439,16 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var searchTotal={{.SearchTotal}};
       var pageSize={{.PageSize}};
       var currentPage=1;
-      var totalPages=Math.max(1,Math.ceil(searchTotal/pageSize));
+      var totalPages=1;
+      var searchDone=false;
+
+      // Calculate initial totalPages if we have results
+      if(searchTotal>0){totalPages=Math.ceil(searchTotal/pageSize);}
+      else{
+        // Unknown total — count rows in the table as minimum
+        var rows=document.querySelectorAll('#search-results tbody tr');
+        if(rows.length>0){totalPages=Math.max(1,Math.ceil((rows.length+(currentPage-1)*pageSize)/pageSize));}
+      }
 
       function buildRowHTML(item){
         var title=item.page_url?'<a href="'+item.page_url+'" target="_blank">'+(item.title||'')+'</a>':(item.title||'');
@@ -2450,10 +2459,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       function renderPagination(){
         var bar=document.getElementById('pagination-bar');
         if(!bar)return;
-        // Guard: no search results or empty table
         var tbl=document.getElementById('search-results');
         if(!tbl||!tbl.querySelector('tbody tr')){bar.innerHTML='';return;}
-        if(totalPages<=1){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);return;}
+        // Cap totalPages if search is done
+        var maxPage=searchDone?Math.ceil(searchTotal/pageSize):Math.max(currentPage,Math.ceil(searchTotal/pageSize))+1;
+        totalPages=Math.max(1,maxPage);
+        if(totalPages<=1&&searchTotal<=pageSize){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);return;}
         var html='';
         // Prev button
         html+='<button onclick="goToPage('+(currentPage-1)+')" '+(currentPage<=1?'disabled':'')+' style="padding:4px 10px;font-size:12px;margin:0;">{{index .T "page_prev"}}</button>';
@@ -2473,7 +2484,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       async function goToPage(page){
-        if(page<1||page>totalPages||page===currentPage)return;
+        if(page<1||page===currentPage)return;
         var bar=document.getElementById('pagination-bar');
         if(bar)bar.innerHTML='<span style="font-size:12px;color:var(--muted);">{{index .T "page_loading"}}</span>';
         // Use saved query params if current form is empty (re-entered page)
@@ -2483,27 +2494,35 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var savedQ=sessionStorage.getItem('pan-fetcher-query');
           if(savedQ) fd=new URLSearchParams(savedQ);
         }
+        if(!fd.get('q')){bar.innerHTML='<span style="color:var(--danger);">无搜索参数</span>';return;}
         fd.set('offset',(page-1)*pageSize);
         try{
           var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
           var j=await r.json();
-          if(!j.results||j.results.length===0){renderPagination();return;}
+          if(!j.results||j.results.length===0){
+            if(j.done){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">已加载全部 {{index .T "page_total"}}</span>'.replace('%d',searchTotal||j.total||0);}
+            else{renderPagination();}
+            return;
+          }
           // Replace tbody
           var tbody=document.querySelector('#search-results tbody');
+          if(!tbody){renderPagination();return;}
           tbody.innerHTML=j.results.map(buildRowHTML).join('');
-          if(j.total&&j.total>searchTotal)searchTotal=j.total;
-          totalPages=Math.max(1,Math.ceil(searchTotal/pageSize));
+          // Update totals: use j.total as the real count
+          if(j.total) searchTotal=j.total;
+          searchDone=!!j.done;
+          totalPages=searchDone?Math.ceil(searchTotal/pageSize):Math.max(currentPage,Math.ceil(searchTotal/pageSize))+1;
           currentPage=page;
           renderPagination();
           // Persist pagination state
-          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
+          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize,searchDone:searchDone}));
           // Also update saved query params
           var form2=document.getElementById('search-form');
           var fd2=new URLSearchParams(new FormData(form2));
           if(fd2.get('q')) sessionStorage.setItem('pan-fetcher-query',fd2.toString());
           // Scroll to top of results
           document.getElementById('search-results').scrollIntoView({behavior:'smooth',block:'start'});
-        }catch(e){renderPagination();}
+        }catch(e){console.error(e);renderPagination();}
       }
 
       // Init pagination bar on page load
