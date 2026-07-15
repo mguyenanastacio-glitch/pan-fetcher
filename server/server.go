@@ -1831,7 +1831,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "subs"}}
     <div class="card panel">
       <h2>{{index .T "subs_mgmt"}} ({{len .RssSubs}})
-        <span style="font-weight:400;font-size:12px;color:var(--muted);margin-left:8px;">{{index .T "no_subs_hint"}}</span>
+        {{if not .RssSubs}}<span style="font-weight:400;font-size:12px;color:var(--muted);margin-left:8px;">{{index .T "no_subs_hint"}}</span>{{end}}
       </h2>
       {{if .RssSubs}}
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
@@ -1840,12 +1840,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <button onclick="clearAllCache()" style="margin:0;padding:4px 12px;font-size:12px;background:#6b7280;">{{index .T "clear_all_cache"}}</button>
       </div>
       <table class="tbl">
-        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_status"}}</th><th>{{index .T "cache"}}</th><th></th></tr></thead>
+        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "indexer_label"}}</th><th>{{index .T "sub_status"}}</th><th>{{index .T "cache"}}</th><th></th></tr></thead>
         <tbody>
         {{range .RssSubs}}<tr>
           <td>
             <strong>{{.Name}}</strong><br><small class="muted">{{.Site}}</small>
           </td>
+          <td><small class="muted">{{.IndexerDisplay}}</small></td>
           <td>
             <form action="/subs" method="post" style="display:inline;">
               <input type="hidden" name="action" value="toggle">
@@ -1876,7 +1877,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           </td>
         </tr>
         <tr class="edit-row" style="display:none;">
-          <td colspan="4" style="padding:0;">
+          <td colspan="5" style="padding:0;">
             <div style="padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;margin:8px 0;">
               <h3 style="margin:0 0 10px;">{{index $.T "edit_sub"}}</h3>
               <form action="/subs" method="post">
@@ -1894,7 +1895,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             </div>
           </td>
         </tr>
-        <tr id="cache-{{.Name}}" style="display:none;"><td colspan="4" style="padding:0;">
+        <tr id="cache-{{.Name}}" style="display:none;"><td colspan="5" style="padding:0;">
           <div style="padding:4px 8px;background:#f8fafc;max-height:300px;overflow-y:auto;" id="cache-list-{{.Name}}">{{index $.T "loading"}}</div>
         </td></tr>
         {{end}}
@@ -2249,6 +2250,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         var card=document.querySelector('.card.panel');
         if(card&&!document.querySelector('#search-form'))return;
         if(card)card.innerHTML=saved;
+        // Clear pagination bar after restore (will be re-rendered)
+        var bar=document.getElementById('pagination-bar');
+        if(bar)bar.innerHTML='';
       }
       {{end}}
       // Apply keyword filter on load (deferred for script load order)
@@ -2306,29 +2310,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <!-- shared utility functions -->
     <script>
       function clearSearch(){
-        // Clear text/keyword inputs
-        var form=document.getElementById('search-form');
-        if(form){
-          ['q','keyword'].forEach(function(name){
-            var el=form.querySelector('input[name="'+name+'"]');
-            if(el)el.value='';
-          });
-          form.querySelectorAll('input[type="checkbox"]').forEach(function(el){el.checked=false;});
-          form.querySelectorAll('select').forEach(function(el){el.selectedIndex=0;});
-        }
-        // Clear results table and pagination
-        var tbl=document.getElementById('search-results');
-        if(tbl){tbl.querySelector('tbody').innerHTML='';tbl.style.display='none';}
-        var bar=document.getElementById('pagination-bar');
-        if(bar)bar.innerHTML='';
-        // Clear RSS subscription area
-        var sub=document.getElementById('sub-form');
-        if(sub)sub.style.display='none';
-        // Clear persisted search state
         sessionStorage.removeItem('pan-fetcher-search');
-        // Focus search input
-        var q=document.getElementById('search-q');
-        if(q){q.value='';q.focus();}
+        location.href='/search';
       }
       function toggleSubForm(){
         var el=document.getElementById('sub-form');
@@ -2368,6 +2351,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       function renderPagination(){
         var bar=document.getElementById('pagination-bar');
         if(!bar)return;
+        // Guard: no search results or empty table
+        var tbl=document.getElementById('search-results');
+        if(!tbl||!tbl.querySelector('tbody tr')){bar.innerHTML='';return;}
         if(totalPages<=1){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);return;}
         var html='';
         // Prev button
@@ -3053,6 +3039,7 @@ func New(agent *p115pkg.Agent, port int) *Server {
 		jackett.SetProxy(cfg.Proxy.HTTP)
 	}
 	// Warm Jackett cache in background
+	s.ensureDefaultIndexers()
 	if s.JackettURL != "" && s.JackettAPIKey != "" {
 		go func() {
 			if jk, err := jackett.ListIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}); err == nil {
@@ -3110,6 +3097,210 @@ func (s *Server) LoadNotifyConfig() {
 }
 
 // LoadJackettConfig reads Jackett settings from web-settings.json.
+// ensureDefaultIndexers writes the 4 built-in indexer YAMLs if the defs directory is empty.
+func (s *Server) ensureDefaultIndexers() {
+	defDir := "indexers"
+	entries, err := os.ReadDir(defDir)
+	if err != nil {
+		os.MkdirAll(defDir, 0755)
+		entries = nil
+	}
+	hasYAML := false
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".yml") {
+			hasYAML = true
+			break
+		}
+	}
+	if hasYAML {
+		return
+	}
+	log.Printf("[indexer] installing default indexers to %s", defDir)
+	for name, content := range defaultIndexers {
+		os.WriteFile(filepath.Join(defDir, name+".yml"), []byte(content), 0644)
+	}
+}
+
+// defaultIndexers are the 4 built-in YAML definitions for initial setup.
+var defaultIndexers = map[string]string{
+	"acgrip": `id: acgrip
+name: ACG.RIP
+language: zh-CN
+type: public
+encoding: UTF-8
+links:
+  - https://acg.rip/
+caps:
+  categories:
+    1: TV
+  modes:
+    search: [q]
+    tv-search: [q, season, ep]
+search:
+  paths:
+    - path: /
+  inputs:
+    term: "{{ .Keywords }}"
+    page: "{{.Page}}"
+  rows:
+    selector: tbody tr
+    after: 2
+  fields:
+    title:
+      selector: td:nth-child(3)
+    category:
+      text: 1
+    details:
+      selector: td:nth-child(3) a
+      attribute: href
+    download:
+      selector: a[href^="magnet:?"]
+      attribute: href
+    magnet:
+      selector: a[href^="magnet:?"]
+      attribute: href
+    size:
+      selector: td:nth-child(5)
+    date:
+      selector: td:nth-child(4) time
+      attribute: datetime
+    seeders:
+      selector: td:nth-child(6)
+`,
+	"dmhy": `id: dmhy
+name: 动漫花园
+language: zh-CN
+type: public
+links:
+  - https://share.dmhy.org/
+caps:
+  categories:
+    1: TV
+  modes:
+    search: [q]
+search:
+  paths:
+    - path: "topics/list"
+  inputs:
+    keyword: "{{ .Keywords }}"
+    sort_id: "0"
+    page: "{{.Page}}"
+  rows:
+    selector: "table#topic_list tbody tr:has(a[href^=\"magnet:?\"])"
+    after: 0
+  fields:
+    title:
+      selector: "td:nth-child(3)"
+    download:
+      selector: "a[href^=\"magnet:?\"]"
+      attribute: href
+    size:
+      selector: "td:nth-child(5)"
+    date:
+      selector: "td:nth-child(1)"
+    seeders:
+      selector: "td:nth-child(6)"
+    leechers:
+      selector: "td:nth-child(7)"
+    category:
+      selector: "td:nth-child(2)"
+    page:
+      selector: "td:nth-child(3) a"
+      attribute: href
+`,
+	"mikan": `id: mikan
+name: Mikan
+language: zh-CN
+type: public
+encoding: UTF-8
+links:
+  - https://mikanani.me/
+caps:
+  categorymappings:
+    - {id: 1, cat: TV/Anime, desc: "Anime"}
+  modes:
+    search: [q]
+    tv-search: [q, season, ep]
+search:
+  paths:
+    - path: "Home/Search"
+  inputs:
+    searchstr: "{{ .Keywords }}"
+    page: "{{.Page}}"
+  rows:
+    selector: table.table-striped tbody tr
+  fields:
+    category:
+      text: 1
+    title:
+      selector: a[href^="/Home/Episode/"]
+    details:
+      selector: a[href^="/Home/Episode/"]
+      attribute: href
+    download:
+      selector: a[href^="/Download/"]
+      attribute: href
+    magnet:
+      selector: a[data-clipboard-text]
+      attribute: data-clipboard-text
+    size:
+      selector: td:nth-child(3)
+    date:
+      selector: td:nth-child(1)
+    seeders:
+      selector: td:nth-child(4)
+`,
+	"nyaasi": `id: nyaasi
+name: Nyaa.si
+language: en-US
+type: public
+encoding: UTF-8
+requestDelay: 2
+links:
+  - https://nyaa.si/
+caps:
+  categorymappings:
+    - {id: 1_0, cat: TV/Anime, desc: "Anime"}
+  modes:
+    search: [q]
+    tv-search: [q, season, ep]
+  allowrawsearch: true
+search:
+  paths:
+    - path: /
+  inputs:
+    q: "{{ .Keywords }}"
+    p: "{{.Page}}"
+    f: "0"
+    c: "0_0"
+  rows:
+    selector: tr.default,tr.danger,tr.success
+  fields:
+    title:
+      selector: "td:nth-child(2) a:last-child"
+    details:
+      selector: "td:nth-child(2) a:last-child"
+      attribute: href
+    download:
+      selector: "a[href$=\".torrent\"]"
+      attribute: href
+    magnet:
+      selector: "a[href^=\"magnet:?\"]"
+      attribute: href
+    size:
+      selector: "td:nth-child(4)"
+    date:
+      selector: "td:nth-child(5)"
+    seeders:
+      selector: "td:nth-child(6)"
+    leechers:
+      selector: "td:nth-child(7)"
+    category:
+      selector: "td:nth-child(1) a"
+      attribute: href
+`,
+}
+
 func (s *Server) LoadJackettConfig() {
 	ws := s.loadWebSettings()
 	s.JackettURL = ws.JackettURL
@@ -5719,14 +5910,15 @@ type subRow struct {
 }
 
 type rssSubRow struct {
-	Site       string
-	Name       string
-	URL        string
-	Filter     string
-	Cid        string
-	SavePath   string
-	Enabled    bool
-	CacheCount int
+	Site           string
+	Name           string
+	URL            string
+	Filter         string
+	Cid            string
+	SavePath       string
+	Enabled        bool
+	CacheCount     int
+	IndexerDisplay string
 }
 
 func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -5783,11 +5975,30 @@ func (s *Server) loadRssSubs() []rssSubRow {
 				Site: site, Name: e.Name, URL: e.URL,
 				Filter: e.Filter, Cid: e.Cid, SavePath: e.SavePath,
 				Enabled: e.Enabled,
-				CacheCount: globalDedup.SubCount(e.Name),
+				CacheCount:     globalDedup.SubCount(e.Name),
+				IndexerDisplay: parseIndexerFromRSSURL(e.URL),
 			})
 		}
 	}
 	return rows
+}
+
+// parseIndexerFromRSSURL extracts indexer names from an RSS URL's indexers parameter.
+func parseIndexerFromRSSURL(rssURL string) string {
+	u, err := url.Parse(rssURL)
+	if err != nil {
+		return ""
+	}
+	raw := u.Query().Get("indexers")
+	if raw == "" {
+		return "全部"
+	}
+	parts := strings.Split(raw, ",")
+	for i, p := range parts {
+		// Strip jackett: prefix for display
+		parts[i] = strings.TrimPrefix(strings.TrimSpace(p), "jackett:")
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *Server) readRssFeeds() map[string][]rssFeedEntry {
