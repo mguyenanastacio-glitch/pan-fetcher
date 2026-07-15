@@ -39,12 +39,15 @@ func SetProxy(proxyURL string) {
 }
 
 // Login authenticates with the Jackett admin UI and stores the session cookie.
-// The password is typically the same as the API key unless a separate admin
-// password was configured in Jackett.
+// Uses cfg.AdminPassword if set, otherwise falls back to cfg.APIKey.
 func Login(cfg Config) error {
+	password := cfg.AdminPassword
+	if password == "" {
+		password = cfg.APIKey
+	}
 	loginURL := strings.TrimRight(cfg.URL, "/") + "/UI/Dashboard"
 	form := url.Values{}
-	form.Set("password", cfg.APIKey)
+	form.Set("password", password)
 
 	req, err := http.NewRequest("POST", loginURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -76,8 +79,9 @@ func Login(cfg Config) error {
 
 // Config holds Jackett connection settings.
 type Config struct {
-	URL    string // e.g. "http://localhost:9117"
-	APIKey string
+	URL           string // e.g. "http://localhost:9117"
+	APIKey        string
+	AdminPassword string // web UI admin password (falls back to APIKey if empty)
 }
 
 // Result is a single search result from Jackett.

@@ -65,8 +65,9 @@ type Server struct {
 	KeyFile   string // TLS private key
 	ProxyHTTP string
 	WeworkWH  string // WeChat Work webhook
-	JackettURL    string
-	JackettAPIKey string
+	JackettURL           string
+	JackettAPIKey        string
+	JackettAdminPassword string
 	jackettActive map[string]bool           // jackett indexer IDs that are activated
 	jackettActiveMu sync.Mutex
 	jackettCache  []jackett.IndexerInfo
@@ -173,9 +174,10 @@ type dashboardData struct {
 	NotifyLog       bool
 	Timezone        string
 	TimezoneOptions map[string]string
-	JackettURL      string
-	JackettAPIKey   string
-	AboutVersion    string
+	JackettURL           string
+	JackettAPIKey        string
+	JackettAdminPassword string
+	AboutVersion         string
 	AutoUpdate      bool
 }
 
@@ -533,9 +535,10 @@ type webSettings struct {
 	NotifyRSS     bool   `json:"notify_rss"`
 	NotifyLog     bool   `json:"notify_log"`
 	Timezone      string `json:"timezone"`
-	JackettURL    string `json:"jackett_url"`
-	JackettAPIKey string `json:"jackett_apikey"`
-	PageSize      int    `json:"page_size"`
+	JackettURL           string `json:"jackett_url"`
+	JackettAPIKey        string `json:"jackett_apikey"`
+	JackettAdminPassword string `json:"jackett_admin_password"`
+	PageSize             int    `json:"page_size"`
 	AutoUpdate    bool   `json:"auto_update"`
 }
 
@@ -586,6 +589,15 @@ func (s *Server) saveJackettEnabled() {
 	os.WriteFile("jackett-enabled.json", data, 0644)
 }
 
+// jackettConfig returns a jackett.Config populated from server settings.
+func (s *Server) jackettConfig() jackett.Config {
+	return jackett.Config{
+		URL:           s.JackettURL,
+		APIKey:        s.JackettAPIKey,
+		AdminPassword: s.JackettAdminPassword,
+	}
+}
+
 // handleJKAddToJackett adds an indexer to the linked Jackett instance via API.
 // writeJSON writes a JSON object to the response, properly escaping the message.
 func writeJSON(w http.ResponseWriter, ok bool, msg string) {
@@ -598,7 +610,7 @@ func (s *Server) handleJKAddToJackett(w http.ResponseWriter, r *http.Request, id
 		writeJSON(w, false, "Jackett not configured")
 		return
 	}
-	cfg := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+	cfg := s.jackettConfig()
 	if err := jackett.AddIndexer(cfg, id); err != nil {
 		log.Printf("[jackett] add %s failed: %v", id, err)
 		writeJSON(w, false, err.Error())
@@ -627,7 +639,7 @@ func (s *Server) handleJKRemoveFromJackett(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, false, "Jackett not configured")
 		return
 	}
-	cfg := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+	cfg := s.jackettConfig()
 	if err := jackett.DeleteIndexer(cfg, id); err != nil {
 		log.Printf("[jackett] remove %s failed: %v", id, err)
 		writeJSON(w, false, err.Error())
@@ -2579,7 +2591,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <!-- local library -->
     <div class="card panel" style="margin-top:16px;">
       <h2>{{index .T "idx_lib_local"}} (<span id="lib-count">{{len .IndexerLibrary}}</span>)
-        <button onclick="newIdx()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent-2);">+ New</button>
+        <button onclick="newIdx()" style="margin:0 0 0 12px;padding:4px 12px;font-size:12px;background:var(--accent-2);">+ 添加库</button>
         <button onclick="activateSelected()" style="margin:0 0 0 8px;padding:4px 12px;font-size:12px;background:var(--accent);">{{index .T "idx_batch_add"}}</button>
       </h2>
       {{if .IndexerLibrary}}
@@ -2794,11 +2806,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             h+='<td class="muted">'+(x.language||'')+'</td>';
             h+='<td style="white-space:nowrap;">';
             if(isActive){
-              h+='<span style="font-size:11px;color:var(--accent-2);" title="已加入本地列表">已添加</span> ';
+              h+='<span style="font-size:11px;color:var(--accent-2);" title="已在本地激活">已激活</span> ';
             }else{
-              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="加入本地列表">+</button> ';
+              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到本地列表">+</button> ';
             }
-            h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器配置">✕</button>';
+            h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\',\''+x.name.replace(/'/g,"\\'")+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';
             h+='</td></tr>';
           });
           h+='</tbody></table>';
@@ -2851,24 +2863,30 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       function jkAddToJackett(id){
+        showModal('添加索引器','正在向 Jackett 添加 <b>'+id+'</b>…');
         apiPost('jk_add_to_jackett',{id}).then(function(r){
-          if(r.ok){location.reload();}else{alert('添加失败: '+r.msg);}
+          closeModal();
+          if(r.ok){alertModal('已添加到 Jackett');loadJackettLib();}
+          else{alertModal('添加失败: '+r.msg);}
         });
       }
 
-      function jkRemoveFromJackett(id){
-        if(!confirm('从 Jackett 中移除此索引器？'))return;
+      async function jkRemoveFromJackett(id,name){
+        if(!(await confirmAsync('从 Jackett 删除 <b>'+(name||id)+'</b>？<br><small style="color:var(--danger);">这将移除此索引器在 Jackett 中的所有配置</small>'))) return;
+        showModal('删除索引器','正在从 Jackett 移除 <b>'+id+'</b>…');
         apiPost('jk_remove_from_jackett',{id}).then(function(r){
-          if(r.ok){location.reload();}else{alert('移除失败: '+r.msg);}
+          closeModal();
+          if(r.ok){alertModal('已从 Jackett 移除');loadJackettLib();}
+          else{alertModal('移除失败: '+r.msg);}
         });
       }
       async function jkActivate(id){
         await apiPost('jk_activate',{id});
-        location.reload();
+        loadJackettLib();
       }
       async function jkDeactivate(id){
         await apiPost('jk_deactivate',{id});
-        location.reload();
+        loadJackettLib();
       }
       async function jkActivateSelected(){
         var checks=document.querySelectorAll('#jk-content input[type="checkbox"]:checked');
@@ -2876,7 +2894,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         for(var c of checks){
           await apiPost('jk_activate',{id:c.value});
         }
-        location.reload();
+        loadJackettLib();
       }
       loadJackettLib();
     </script>
@@ -3104,6 +3122,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
               </div>
               <span id="jk-test-result" style="font-size:12px;"></span>
             </div>
+            <div style="flex:1;min-width:140px;">
+              <label>Admin 密码 <small style="color:var(--muted);">(WebUI 登录密码)</small></label>
+              <input name="jackett_admin_password" type="password" placeholder="与 API Key 相同则留空" value="{{.JackettAdminPassword}}">
+            </div>
           </div>
         </fieldset>
 
@@ -3170,6 +3192,7 @@ func New(agent *p115pkg.Agent, port int) *Server {
 	ws := s.loadWebSettings()
 	s.JackettURL = ws.JackettURL
 	s.JackettAPIKey = ws.JackettAPIKey
+	s.JackettAdminPassword = ws.JackettAdminPassword
 	// Apply proxy to Jackett client (same as engine)
 	cfg, _, _ := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
 	if cfg.Proxy.HTTP != "" {
@@ -3179,7 +3202,7 @@ func New(agent *p115pkg.Agent, port int) *Server {
 	s.ensureDefaultIndexers()
 	if s.JackettURL != "" && s.JackettAPIKey != "" {
 		go func() {
-			if jk, err := jackett.ListIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}); err == nil {
+			if jk, err := jackett.ListIndexers(s.jackettConfig()); err == nil {
 				s.jackettCacheMu.Lock()
 				s.jackettCache = jk
 				s.jackettCacheTime = time.Now()
@@ -3442,6 +3465,7 @@ func (s *Server) LoadJackettConfig() {
 	ws := s.loadWebSettings()
 	s.JackettURL = ws.JackettURL
 	s.JackettAPIKey = ws.JackettAPIKey
+	s.JackettAdminPassword = ws.JackettAdminPassword
 }
 
 // saveProxyConfig persists the current proxy setting to config.toml.
@@ -3697,7 +3721,7 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 			jackettActiveSet[id] = true
 		}
 		s.jackettActiveMu.Unlock()
-		jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+		jc := s.jackettConfig()
 		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
 			for _, jr := range jr {
 				if !jackettActiveSet[jr.Tracker] {
@@ -4293,6 +4317,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.JackettAPIKey = v
 			changes = append(changes, "jackett_apikey=***")
 		}
+		if v := strings.TrimSpace(r.FormValue("jackett_admin_password")); v != ws.JackettAdminPassword {
+			ws.JackettAdminPassword = v
+			s.JackettAdminPassword = v
+			changes = append(changes, "jackett_admin_password=***")
+		}
 		// Page size
 		if v, err := strconv.Atoi(r.FormValue("page_size")); err == nil && v >= 10 && v <= 500 && v != ws.PageSize {
 			ws.PageSize = v
@@ -4340,6 +4369,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data.TimezoneOptions = timezones
 		data.JackettURL = ws.JackettURL
 		data.JackettAPIKey = ws.JackettAPIKey
+		data.JackettAdminPassword = ws.JackettAdminPassword
 		if s.Agent != nil {
 			data.Settings = s.Agent.GetSettings()
 		}
@@ -4380,6 +4410,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	data.TimezoneOptions = timezones
 	data.JackettURL = ws.JackettURL
 	data.JackettAPIKey = ws.JackettAPIKey
+	data.JackettAdminPassword = ws.JackettAdminPassword
 	if s.Agent != nil {
 		data.Settings = s.Agent.GetSettings()
 	}
@@ -5185,7 +5216,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 		// Jackett search (if configured) — only from activated Jackett indexers
 		if s.JackettURL != "" && s.JackettAPIKey != "" {
-			jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+			jc := s.jackettConfig()
 			if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
 				for _, r := range jr {
 					trackerLower := strings.ToLower(r.Tracker)
@@ -5411,7 +5442,7 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 		}
 
 		jackettOff := (ctx.NextPage - 1) * 100
-		jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+		jc := s.jackettConfig()
 		if jr, err := jackett.Search(jc, ctx.Query, nil, jackettOff); err == nil {
 			for _, r := range jr {
 				trackerLower := strings.ToLower(r.Tracker)
@@ -5706,6 +5737,7 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 	// Fetch fresh Jackett indexers and prune stale activations
 	data.JackettURL = s.JackettURL
 	data.JackettAPIKey = s.JackettAPIKey
+	data.JackettAdminPassword = s.JackettAdminPassword
 	data.JackettLibrary = s.refreshJackettCache()
 
 	// Add Jackett-activated indexers to active list (show both, label conflict)
@@ -5761,7 +5793,7 @@ func (s *Server) handleJackettAll(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"ok":false,"msg":"not configured"}`)
 		return
 	}
-	all, err := jackett.ListAllIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey})
+	all, err := jackett.ListAllIndexers(s.jackettConfig())
 	if err != nil {
 		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
 		return
@@ -5782,7 +5814,7 @@ func (s *Server) handleJackettAdd(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"ok":false,"msg":"missing id"}`)
 		return
 	}
-	jc := jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey}
+	jc := s.jackettConfig()
 	if err := jackett.AddIndexer(jc, id); err != nil {
 		fmt.Fprintf(w, `{"ok":false,"msg":"%s"}`, err.Error())
 		return
@@ -5798,7 +5830,7 @@ func (s *Server) refreshJackettCache() []jackett.IndexerInfo {
 		return nil
 	}
 
-	jk, err := jackett.ListIndexers(jackett.Config{URL: s.JackettURL, APIKey: s.JackettAPIKey})
+	jk, err := jackett.ListIndexers(s.jackettConfig())
 	if err != nil {
 		log.Printf("[jackett] list indexers: %v", err)
 		s.jackettCacheMu.Lock()
