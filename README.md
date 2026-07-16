@@ -20,11 +20,11 @@
 
 ### 🔍 聚合搜索
 
-4 个内置 BT 索引器（ACG.RIP · 动漫花园 · Mikan · Nyaa.si），Cardigann YAML 兼容可自行扩展。集成 **Jackett / Prowlarr**，一键激活其管理的数百个索引器。分类筛选 · 关键词实时过滤 · 搜索结果分页浏览 · 一键添加 RSS 订阅。
+4 个内置 BT 索引器（ACG.RIP · 动漫花园 · Mikan · Nyaa.si），Cardigann YAML 兼容可自行扩展。集成 **Jackett / Prowlarr**，一键激活其管理的数百个索引器。分类筛选 · 关键词实时过滤 · 分页浏览（带行序号） · 一键订阅。搜索结果自动去重（InfoHash / Magnet / Title+Size 三级），翻页无重复。
 
 ### 📡 Jackett / Prowlarr 集成
 
-自动发现 Jackett 实例中的所有索引器，批量激活/停用、连接测试。搜索结果标注来源（本地 / Jackett），冲突索引器自动标注。Jackett 索引器可独立选择参与搜索和 RSS 订阅。
+自动发现 Jackett 实例中的所有索引器，批量激活/停用、连接测试。支持 Admin 密码认证（WebUI 登录密码）。搜索结果标注来源（本地 / Jackett），可独立选择参与搜索的索引器。从 Jackett 库一键添加公开索引器、删除已配置索引器。
 
 ### 📋 RSS 订阅
 
@@ -44,7 +44,7 @@
 
 ### 🔔 通知推送
 
-企业微信 Webhook · 任务/RSS/日志推送独立开关 · 一键测试。
+企业微信 Webhook · 任务完成/RSS 新资源/运行日志 独立推送开关 · 一键测试 · 实时日志流（懒加载）。
 
 ### ⚙️ 部署友好
 
@@ -171,15 +171,15 @@ Automated media downloader for 115 cloud storage. Search across BT indexers, sub
 
 ### Features
 
-- **� Aggregated Search** — 4 built-in indexers + Jackett/Prowlarr integration for hundreds more. Category & keyword filters, paginated results.
-- **📡 Jackett/Prowlarr** — Auto-discover, batch activate/deactivate, source labels, conflict detection.
+- **🔍 Aggregated Search** — 4 built-in indexers + Jackett/Prowlarr for hundreds more. Category & keyword filters, paginated with row numbers, auto-dedup (InfoHash/Magnet/Title+Size), one-click subscribe.
+- **📡 Jackett/Prowlarr** — Auto-discover, batch activate/deactivate, Admin password auth, add/remove indexers via API, source labels.
 - **📋 RSS Subscriptions** — Auto-fetch, info hash dedup, keyword filter, Jackett-only feed support.
 - **📥 Offline Download** — Magnet/ed2k/http batch submit with status tabs.
 - **📂 File Manager** — Browse, rename, move, copy, delete 115 cloud files.
 - **📊 Dashboard** — Push stats, active subs, indexer count, cache entries, uptime.
-- **🔔 Notifications** — WeChat Work webhook with per-event toggles.
+- **🔔 Notifications** — WeChat Work webhook with per-event toggles, real-time log streaming.
 - **🐳 Docker** — One-command deploy via `docker-compose`.
-- **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, self-restart.
+- **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, self-restart, in-app update check.
 
 ### Quick Start
 
