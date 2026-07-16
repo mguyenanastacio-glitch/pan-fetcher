@@ -1,0 +1,46 @@
+---
+id: dmhy
+name: 动漫花园
+description: "动漫花园是中文公共 BT 动漫 tracker"
+type: public
+language: zh-CN
+encoding: UTF-8
+links:
+  - https://share.dmhy.org/
+
+caps:
+  categorymappings:
+    - {id: "2", cat: TV/Anime, desc: "動畫"}
+    - {id: "31", cat: TV/Anime, desc: "季度全集"}
+  modes:
+    search: [q]
+
+search:
+  paths:
+    - path: "topics/list"
+  inputs:
+    keyword: "{{ .Keywords }}"
+    sort_id: "0"
+    page: "{{.Page}}"
+  rows:
+    selector: "table#topic_list tbody tr"
+  fields:
+    title:
+      selector: "td.title"
+    category:
+      selector: "td:nth-child(1) a"
+      attribute: href
+    download:
+      selector: "a[href^=\"magnet:?\"]"
+      attribute: href
+    details:
+      selector: "td.title > a"
+      attribute: href
+    size:
+      selector: "td:nth-child(5)"
+    date:
+      selector: "td:nth-child(2) span"
+    seeders:
+      selector: "td:nth-child(6)"
+    leechers:
+      selector: "td:nth-child(7)"
