@@ -3272,6 +3272,21 @@ func (s *Server) LoadProxyConfig() {
 	}
 }
 
+// httpClient returns an HTTP client that respects the configured proxy.
+func (s *Server) httpClient() *http.Client {
+	if s.ProxyHTTP == "" {
+		return http.DefaultClient
+	}
+	proxyURL, err := url.Parse(s.ProxyHTTP)
+	if err != nil {
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   90 * time.Second,
+	}
+}
+
 // LoadNotifyConfig reads notification webhook and Jackett settings from config.toml.
 func (s *Server) LoadNotifyConfig() {
 	cfg, _, err := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
@@ -4873,7 +4888,7 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	info := updateInfo{Current: Version}
 
-	resp, err := http.Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
+	resp, err := s.httpClient().Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
 	if err != nil {
 		json.NewEncoder(w).Encode(info)
 		return
@@ -4921,7 +4936,7 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get latest release info
-	resp, err := http.Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
+	resp, err := s.httpClient().Get("https://api.github.com/repos/mguyenanastacio-glitch/pan-fetcher/releases/latest")
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_fetch_failed") + ": " + err.Error()})
 		return
@@ -4962,7 +4977,7 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download the archive
-	dlResp, err := http.Get(downloadURL)
+	dlResp, err := s.httpClient().Get(downloadURL)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_download_failed") + ": " + err.Error()})
 		return
