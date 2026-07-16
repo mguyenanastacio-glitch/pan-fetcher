@@ -1549,6 +1549,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 		}
 		return false
 	},
+	"add": func(a, b int) int { return a + b },
 }).Parse(`
 <!doctype html>
 <html lang="{{.Lang}}">
@@ -2308,11 +2309,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <!-- search results -->
       {{if .SearchResults}}
       <div style="margin-top:16px;">
-        <table class="tbl" id="search-results"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "date_label"}}</th><th>{{index .T "indexer_label"}}</th><th></th></tr></thead><tbody>
-        {{range .SearchResults}}<tr data-title="{{.Title}}">
-          <td>{{if .PageURL}}<a href="{{.PageURL}}" target="_blank">{{.Title}}</a>{{else}}{{.Title}}{{end}}</td>
-          <td class="muted">{{.SizeFmt}}</td><td>{{.Seeders}}</td><td class="muted" style="font-size:11px;">{{.DateFmt}}</td><td class="muted">{{.IndexerName}}</td>
-          <td>{{if .MagnetURL}}<button data-magnet="{{.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
+        <table class="tbl" id="search-results"><thead><tr><th>#</th><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "date_label"}}</th><th>{{index .T "indexer_label"}}</th><th></th></tr></thead><tbody>
+        {{range $i, $r := .SearchResults}}<tr data-title="{{$r.Title}}">
+          <td class="muted" style="font-size:11px;text-align:center;">{{add $i 1}}</td>
+          <td>{{if $r.PageURL}}<a href="{{$r.PageURL}}" target="_blank">{{$r.Title}}</a>{{else}}{{$r.Title}}{{end}}</td>
+          <td class="muted">{{$r.SizeFmt}}</td><td>{{$r.Seeders}}</td><td class="muted" style="font-size:11px;">{{$r.DateFmt}}</td><td class="muted">{{$r.IndexerName}}</td>
+          <td>{{if $r.MagnetURL}}<button data-magnet="{{$r.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
         </tr>{{end}}</tbody></table>
       </div>
       <!-- pagination bar -->
@@ -2328,7 +2330,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     var pageSize={{.PageSize}};
     var currentPage=1;
     var totalPages=1;
-    var searchDone=false;
 
     // Calculate initial totalPages
     if(searchTotal>0){totalPages=Math.ceil(searchTotal/pageSize);}
@@ -2346,7 +2347,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       // Save pagination state AND query params so goToPage works on re-entry
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
-      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize,searchDone:searchDone}));
+      sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
       {{else}}
       var saved=sessionStorage.getItem(key);
       if(saved){
@@ -2355,7 +2356,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         if(card)card.innerHTML=saved;
         // Restore pagination state
         var pgState=sessionStorage.getItem(pgKey);
-        if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;searchDone=ps.searchDone||false;}catch(e){}}
+        if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;}catch(e){}}
         // Re-render pagination bar
         renderPagination();
       }
@@ -2454,10 +2455,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       // Note: searchTotal, pageSize, currentPage, totalPages, searchDone
       // are declared above in the search page template section.
 
-      function buildRowHTML(item){
+      function buildRowHTML(item, idx, pageStart){
+        var num=pageStart+idx+1;
         var title=item.page_url?'<a href="'+item.page_url+'" target="_blank">'+(item.title||'')+'</a>':(item.title||'');
         var magnetBtn=item.magnet_url?'<button data-magnet="'+item.magnet_url.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'" onclick="addTaskWithBrowse(this.getAttribute(\'data-magnet\'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>':'';
-        return '<tr data-title="'+(item.title||'')+'"><td>'+title+'</td><td class="muted">'+(item.size||'-')+'</td><td>'+(item.seeders||0)+'</td><td class="muted" style="font-size:11px;">'+(item.date||'')+'</td><td class="muted">'+(item.indexer||'')+'</td><td>'+magnetBtn+'</td></tr>';
+        return '<tr data-title="'+(item.title||'')+'"><td class="muted" style="font-size:11px;text-align:center;">'+num+'</td><td>'+title+'</td><td class="muted">'+(item.size||'-')+'</td><td>'+(item.seeders||0)+'</td><td class="muted" style="font-size:11px;">'+(item.date||'')+'</td><td class="muted">'+(item.indexer||'')+'</td><td>'+magnetBtn+'</td></tr>';
       }
 
       function renderPagination(){
@@ -2465,14 +2467,9 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         if(!bar)return;
         var tbl=document.getElementById('search-results');
         if(!tbl||!tbl.querySelector('tbody tr')){bar.innerHTML='';return;}
-        // Cap totalPages if search is done
-        var maxPage=searchDone?Math.ceil(searchTotal/pageSize):Math.max(currentPage,Math.ceil(searchTotal/pageSize))+1;
-        totalPages=Math.max(1,maxPage);
-        if(totalPages<=1&&searchTotal<=pageSize){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);return;}
+        if(totalPages<=1){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);return;}
         var html='';
-        // Prev button
         html+='<button onclick="goToPage('+(currentPage-1)+')" '+(currentPage<=1?'disabled':'')+' style="padding:4px 10px;font-size:12px;margin:0;">{{index .T "page_prev"}}</button>';
-        // Page numbers
         var start=Math.max(1,currentPage-2);
         var end=Math.min(totalPages,currentPage+2);
         if(start>1){html+='<button onclick="goToPage(1)" style="padding:4px 8px;font-size:12px;margin:0;">1</button>';if(start>2)html+='<span style="padding:0 2px;">…</span>';}
@@ -2480,18 +2477,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           html+='<button onclick="goToPage('+i+')" '+(i===currentPage?'disabled style="padding:4px 8px;font-size:12px;margin:0;font-weight:bold;background:var(--accent);"':'style="padding:4px 8px;font-size:12px;margin:0;"')+'>'+i+'</button>';
         }
         if(end<totalPages){if(end<totalPages-1)html+='<span style="padding:0 2px;">…</span>';html+='<button onclick="goToPage('+totalPages+')" style="padding:4px 8px;font-size:12px;margin:0;">'+totalPages+'</button>';}
-        // Next button
         html+='<button onclick="goToPage('+(currentPage+1)+')" '+(currentPage>=totalPages?'disabled':'')+' style="padding:4px 10px;font-size:12px;margin:0;">{{index .T "page_next"}}</button>';
-        // Page info
         html+=' <span style="font-size:11px;color:var(--muted);margin-left:8px;">{{index .T "page_total"}}</span>'.replace('%d',searchTotal);
         bar.innerHTML=html;
       }
 
       async function goToPage(page){
-        if(page<1||page===currentPage)return;
+        if(page<1||page>totalPages||page===currentPage)return;
         var bar=document.getElementById('pagination-bar');
         if(bar)bar.innerHTML='<span style="font-size:12px;color:var(--muted);">{{index .T "page_loading"}}</span>';
-        // Use saved query params if current form is empty (re-entered page)
         var form=document.getElementById('search-form');
         var fd=new URLSearchParams(new FormData(form));
         if(!fd.get('q')){
@@ -2503,28 +2497,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         try{
           var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
           var j=await r.json();
-          if(!j.results||j.results.length===0){
-            if(j.done){bar.innerHTML='<span style="font-size:11px;color:var(--muted);">已加载全部 {{index .T "page_total"}}</span>'.replace('%d',searchTotal||j.total||0);}
-            else{renderPagination();}
-            return;
-          }
-          // Replace tbody
+          if(!j.results||j.results.length===0){renderPagination();return;}
           var tbody=document.querySelector('#search-results tbody');
           if(!tbody){renderPagination();return;}
-          tbody.innerHTML=j.results.map(buildRowHTML).join('');
-          // Update totals: use j.total as the real count
-          if(j.total) searchTotal=j.total;
-          searchDone=!!j.done;
-          totalPages=searchDone?Math.ceil(searchTotal/pageSize):Math.max(currentPage,Math.ceil(searchTotal/pageSize))+1;
+          var pageStart=(page-1)*pageSize;
+          tbody.innerHTML=j.results.map(function(item,i){return buildRowHTML(item,i,pageStart);}).join('');
           currentPage=page;
           renderPagination();
-          // Persist pagination state
-          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize,searchDone:searchDone}));
-          // Also update saved query params
+          sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
           var form2=document.getElementById('search-form');
           var fd2=new URLSearchParams(new FormData(form2));
           if(fd2.get('q')) sessionStorage.setItem('pan-fetcher-query',fd2.toString());
-          // Scroll to top of results
           document.getElementById('search-results').scrollIntoView({behavior:'smooth',block:'start'});
         }catch(e){console.error(e);renderPagination();}
       }
@@ -5382,30 +5365,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 	if pageSize <= 0 {
 		pageSize = 50
 	}
-	// If at end of cache and not exhausted, fetch next page from sources
-	if offset >= len(searchCache) && !ctx.Exhausted && ctx.Query != "" {
-		searchCacheMu.Unlock()
-
-		newResults := s.searchNextPage(ctx)
-
-		searchCacheMu.Lock()
-		if len(newResults) == 0 {
-			searchCtx.Exhausted = true
-		} else {
-			// Build seen set from existing cache, then dedup new results against it
-			seen := make(map[string]bool, len(searchCache)+len(newResults))
-			for _, r := range searchCache {
-				if key := dedupKey(r); key != "" {
-					seen[key] = true
-				}
-			}
-			unique := dedupSlice(newResults, seen)
-			searchCache = append(searchCache, unique...)
-			searchCtx.NextPage = ctx.NextPage + 1
-		}
-	}
 	cached := searchCache
-	ctx = searchCtx
 	searchCacheMu.Unlock()
 
 	// Return up to pageSize items from the cache (skip offset items)
@@ -5435,7 +5395,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 		results = append(results, item)
 	}
 
-	done := offset+len(results) >= len(cached) && ctx.Exhausted
+	done := offset+len(results) >= len(cached)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"results": results,
