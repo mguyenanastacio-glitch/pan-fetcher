@@ -5013,15 +5013,20 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Atomic rename replaces the running binary (Linux/macOS: works even while running)
-	if err := os.Rename(tmpPath, exe); err != nil {
+	// Replace running binary (platform-specific)
+	restart, err := selfReplace(tmpPath, exe)
+	if err != nil {
 		os.Remove(tmpPath)
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": tr(lang, "update_install_failed") + ": " + err.Error()})
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
-	go func() { time.Sleep(500 * time.Millisecond); doRestart() }()
+	if restart {
+		go func() { time.Sleep(500 * time.Millisecond); doRestart() }()
+	} else {
+		go func() { time.Sleep(500 * time.Millisecond); os.Exit(0) }()
+	}
 }
 
 // copyFile copies a file from src to dst, preserving permissions.
