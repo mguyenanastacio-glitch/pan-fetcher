@@ -5330,7 +5330,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			pageSize = 50
 		}
 		searchCacheMu.Lock()
-		searchCache = dedupResults(se.Results)
+		searchCache = dedupSlice(se.Results, nil)
 		searchCtx = searchContext{
 			Query:    q,
 			Category: category,
@@ -5392,7 +5392,15 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 		if len(newResults) == 0 {
 			searchCtx.Exhausted = true
 		} else {
-			searchCache = appendDeduped(searchCache, newResults)
+			// Build seen set from existing cache, then dedup new results against it
+			seen := make(map[string]bool, len(searchCache)+len(newResults))
+			for _, r := range searchCache {
+				if key := dedupKey(r); key != "" {
+					seen[key] = true
+				}
+			}
+			unique := dedupSlice(newResults, seen)
+			searchCache = append(searchCache, unique...)
 			searchCtx.NextPage = ctx.NextPage + 1
 		}
 	}
@@ -5540,61 +5548,40 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 	}
 
 	log.Printf("[search] page %d returned %d results", ctx.NextPage, len(all))
-	return dedupResults(all)
+	return dedupSlice(all, nil)
 }
 
-// dedupKey returns a deduplication key for a search result.
-// Uses InfoHash if available, otherwise MagnetURL, otherwise Title+Size.
+// dedupKey returns a compact deduplication key.  Uses the most specific
+// identifier available: InfoHash > MagnetURL > Title+Size.
+// The leading char encodes the type: 'h'=InfoHash, 'm'=MagnetURL, 't'=Title+Size.
 func dedupKey(r indexer.SearchResult) string {
 	if r.InfoHash != "" {
-		return "ih:" + r.InfoHash
+		return "h" + r.InfoHash
 	}
 	if r.MagnetURL != "" {
-		return "mg:" + r.MagnetURL
+		return "m" + r.MagnetURL
 	}
-	return fmt.Sprintf("tt:%s|%d", r.Title, r.Size)
+	// Avoid fmt.Sprintf in hot path
+	return "t" + r.Title + "\x00" + strconv.FormatInt(r.Size, 10)
 }
 
-// dedupResults removes duplicates from a slice. Later items win (keep last occurrence).
-func dedupResults(results []indexer.SearchResult) []indexer.SearchResult {
-	seen := make(map[string]int) // key → index in results
+// dedupSlice removes duplicates from a slice, optionally using and updating
+// an existing seen map for cross-batch dedup.  Pass nil to create a fresh set.
+// Keeps the first occurrence of each key (stable ordering).
+func dedupSlice(results []indexer.SearchResult, seen map[string]bool) []indexer.SearchResult {
+	if seen == nil {
+		seen = make(map[string]bool, len(results))
+	}
 	out := results[:0]
 	for i := range results {
 		key := dedupKey(results[i])
-		if key == "" {
-			out = append(out, results[i])
+		if key == "" || seen[key] {
 			continue
 		}
-		if prev, ok := seen[key]; ok {
-			// Replace previous entry with current (keep last)
-			out[prev] = results[i]
-		} else {
-			seen[key] = len(out)
-			out = append(out, results[i])
-		}
+		seen[key] = true
+		out = append(out, results[i])
 	}
 	return out
-}
-
-// appendDeduped appends new results to existing, skipping duplicates already in base.
-func appendDeduped(base, new []indexer.SearchResult) []indexer.SearchResult {
-	seen := make(map[string]bool, len(base))
-	for _, r := range base {
-		key := dedupKey(r)
-		if key != "" {
-			seen[key] = true
-		}
-	}
-	for _, r := range new {
-		key := dedupKey(r)
-		if key == "" || !seen[key] {
-			if key != "" {
-				seen[key] = true
-			}
-			base = append(base, r)
-		}
-	}
-	return base
 }
 
 // savedSearch represents a user-saved search query.
