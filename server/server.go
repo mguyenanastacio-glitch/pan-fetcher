@@ -5263,8 +5263,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Jackett search (if configured) — only from activated Jackett indexers
-		if s.JackettURL != "" && s.JackettAPIKey != "" {
+		// Jackett search (if configured) — only when no filter or Jackett selected
+		if s.JackettURL != "" && s.JackettAPIKey != "" && (len(indexers) == 0 || hasJackettSelection) {
 			jc := s.jackettConfig()
 			if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
 				for _, r := range jr {
@@ -5472,8 +5472,15 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 		all = append(all, se.Results...)
 	}
 
-	// Jackett — use offset based on page
-	if s.JackettURL != "" && s.JackettAPIKey != "" {
+	// Jackett — only when no filter or Jackett indexers selected
+	hasJackettInCtx := false
+	for _, id := range ctx.Indexers {
+		if strings.HasPrefix(id, "jackett:") {
+			hasJackettInCtx = true
+			break
+		}
+	}
+	if s.JackettURL != "" && s.JackettAPIKey != "" && (len(ctx.Indexers) == 0 || hasJackettInCtx) {
 		s.jackettActiveMu.Lock()
 		s.loadJackettEnabled()
 		jackettActiveSet := make(map[string]bool)
