@@ -5330,7 +5330,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			pageSize = 50
 		}
 		searchCacheMu.Lock()
-		searchCache = se.Results
+		searchCache = dedupResults(se.Results)
 		searchCtx = searchContext{
 			Query:    q,
 			Category: category,
@@ -5392,7 +5392,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 		if len(newResults) == 0 {
 			searchCtx.Exhausted = true
 		} else {
-			searchCache = append(searchCache, newResults...)
+			searchCache = appendDeduped(searchCache, newResults)
 			searchCtx.NextPage = ctx.NextPage + 1
 		}
 	}
@@ -5533,7 +5533,61 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 	}
 
 	log.Printf("[search] page %d returned %d results", ctx.NextPage, len(all))
-	return all
+	return dedupResults(all)
+}
+
+// dedupKey returns a deduplication key for a search result.
+// Uses InfoHash if available, otherwise MagnetURL, otherwise Title+Size.
+func dedupKey(r indexer.SearchResult) string {
+	if r.InfoHash != "" {
+		return "ih:" + r.InfoHash
+	}
+	if r.MagnetURL != "" {
+		return "mg:" + r.MagnetURL
+	}
+	return fmt.Sprintf("tt:%s|%d", r.Title, r.Size)
+}
+
+// dedupResults removes duplicates from a slice. Later items win (keep last occurrence).
+func dedupResults(results []indexer.SearchResult) []indexer.SearchResult {
+	seen := make(map[string]int) // key → index in results
+	out := results[:0]
+	for i := range results {
+		key := dedupKey(results[i])
+		if key == "" {
+			out = append(out, results[i])
+			continue
+		}
+		if prev, ok := seen[key]; ok {
+			// Replace previous entry with current (keep last)
+			out[prev] = results[i]
+		} else {
+			seen[key] = len(out)
+			out = append(out, results[i])
+		}
+	}
+	return out
+}
+
+// appendDeduped appends new results to existing, skipping duplicates already in base.
+func appendDeduped(base, new []indexer.SearchResult) []indexer.SearchResult {
+	seen := make(map[string]bool, len(base))
+	for _, r := range base {
+		key := dedupKey(r)
+		if key != "" {
+			seen[key] = true
+		}
+	}
+	for _, r := range new {
+		key := dedupKey(r)
+		if key == "" || !seen[key] {
+			if key != "" {
+				seen[key] = true
+			}
+			base = append(base, r)
+		}
+	}
+	return base
 }
 
 // savedSearch represents a user-saved search query.
