@@ -2,6 +2,8 @@ package server
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -1130,6 +1132,7 @@ var translations = map[string]map[string]string{
 		"update_no_asset":      "未找到匹配的二进制文件",
 		"update_download_failed":"下载更新失败",
 		"update_ok":            "更新完成，服务即将重启",
+		"update_install_failed":"安装失败",
 		"update_need_sudo":     "需要管理员权限。请复制以下命令在终端执行：",
 		"update_checking":      "正在检查…",
 		"update_new_found":     "发现新版本 %s，当前 %s",
@@ -1446,6 +1449,7 @@ var translations = map[string]map[string]string{
 		"update_no_asset":      "No matching binary found",
 		"update_download_failed":"Download failed",
 		"update_ok":            "Updated successfully, restarting…",
+		"update_install_failed":"Install failed",
 		"update_need_sudo":     "Permission denied. Run this command in a terminal:",
 		"update_checking":      "Checking…",
 		"update_new_found":     "New version %s found (current: %s)",
@@ -5072,9 +5076,21 @@ func extractFromZip(r io.Reader, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read zip: %w", err)
 	}
-	// ZIP archives are not yet supported via streaming — use tar.gz on Linux/macOS
-	_ = data
-	return nil, fmt.Errorf("zip extraction not supported, use tar.gz")
+	zipReader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("zip: %w", err)
+	}
+	for _, f := range zipReader.File {
+		if f.Name == name || filepath.Base(f.Name) == name {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, fmt.Errorf("zip open: %w", err)
+			}
+			defer rc.Close()
+			return io.ReadAll(rc)
+		}
+	}
+	return nil, fmt.Errorf("binary %q not found in archive", name)
 }
 
 // compareVersion compares two semver strings (e.g. "v0.4.0" vs "v0.3.3").
