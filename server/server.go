@@ -4987,40 +4987,37 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write to temp file (always writable), then copy into place
-	tmpPath := filepath.Join(os.TempDir(), binaryName+".new")
+	// Write new binary to working directory (always writable, same filesystem as binary)
+	wd, _ := os.Getwd()
+	tmpPath := filepath.Join(wd, binaryName+".new")
 	if err := os.WriteFile(tmpPath, binaryData, 0755); err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "msg": "write temp: " + err.Error()})
 		return
 	}
 
-	// Try to replace the executable (may fail due to permissions)
-	if err := copyFile(tmpPath, exe); err != nil {
-		// Save to working directory (writable) and provide migration command
-		wd, _ := os.Getwd()
-		savePath := filepath.Join(wd, binaryName+".new")
-		if e2 := os.Rename(tmpPath, savePath); e2 != nil {
-			// Fall back to temp
-			savePath = tmpPath
-		}
-		cmd := fmt.Sprintf("sudo mv \"%s\" \"%s\" && sudo systemctl restart pan-fetcher", savePath, exe)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":     false,
-			"msg":    tr(lang, "update_need_sudo"),
-			"action": "sudo",
-			"cmd":    cmd,
-		})
+	// Step 1: try atomic rename (same filesystem, replaces inode)
+	if err := os.Rename(tmpPath, exe); err == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
+		go func() { time.Sleep(500 * time.Millisecond); doRestart() }()
 		return
 	}
-	os.Remove(tmpPath)
-	// Success — restart
-	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
 
-	// Restart after response
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		doRestart()
-	}()
+	// Step 2: try byte-copy (cross-filesystem fallback)
+	if err := copyFile(tmpPath, exe); err == nil {
+		os.Remove(tmpPath)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "msg": tr(lang, "update_ok")})
+		go func() { time.Sleep(500 * time.Millisecond); doRestart() }()
+		return
+	}
+
+	// Step 3: can't replace — keep new binary in workdir and show sudo command
+	cmd := fmt.Sprintf("sudo mv \"%s\" \"%s\" && sudo systemctl restart pan-fetcher", tmpPath, exe)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":     false,
+		"msg":    tr(lang, "update_need_sudo"),
+		"action": "sudo",
+		"cmd":    cmd,
+	})
 }
 
 // copyFile copies a file from src to dst, preserving permissions.
