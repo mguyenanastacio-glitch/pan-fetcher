@@ -4996,8 +4996,14 @@ func (s *Server) handleDoUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Try to replace the executable (may fail due to permissions)
 	if err := copyFile(tmpPath, exe); err != nil {
-		// Keep temp file and give user a sudo command to install
-		cmd := fmt.Sprintf("sudo mv \"%s\" \"%s\" && sudo systemctl restart pan-fetcher", tmpPath, exe)
+		// Save to working directory (writable) and provide migration command
+		wd, _ := os.Getwd()
+		savePath := filepath.Join(wd, binaryName+".new")
+		if e2 := os.Rename(tmpPath, savePath); e2 != nil {
+			// Fall back to temp
+			savePath = tmpPath
+		}
+		cmd := fmt.Sprintf("sudo mv \"%s\" \"%s\" && sudo systemctl restart pan-fetcher", savePath, exe)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":     false,
 			"msg":    tr(lang, "update_need_sudo"),

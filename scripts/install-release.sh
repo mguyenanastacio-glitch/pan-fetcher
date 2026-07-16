@@ -4,7 +4,8 @@ set -Eeuo pipefail
 
 APP_NAME='pan-fetcher'
 REPO='mguyenanastacio-glitch/pan-fetcher'
-BIN_PATH='/usr/local/bin/pan-fetcher'
+BIN_DIR='/opt/pan-fetcher/bin'
+BIN_PATH="${BIN_DIR}/pan-fetcher"
 DATA_DIR='/var/lib/pan-fetcher'
 CONFIG_FILE="${DATA_DIR}/config.toml"
 COOKIES_FILE="${DATA_DIR}/.cookies"
@@ -156,7 +157,8 @@ install_binary() {
   tar -xzf "$archive" -C "$tmp_dir"
   binary="${tmp_dir}/${APP_NAME}"
   [ -f "$binary" ] || die "Archive does not contain ${APP_NAME}."
-  install -m 0755 -o root -g root "$binary" "$BIN_PATH"
+  install -d -m 0755 "$BIN_DIR"
+  install -m 0755 "$binary" "$BIN_PATH"
   info "installed: ${BIN_PATH}"
 }
 
@@ -180,7 +182,7 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=${DATA_DIR}
+ReadWritePaths=${DATA_DIR} ${BIN_DIR}
 
 [Install]
 WantedBy=multi-user.target
