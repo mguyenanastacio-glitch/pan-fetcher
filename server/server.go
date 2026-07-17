@@ -1020,6 +1020,23 @@ var translations = map[string]map[string]string{
 		"jk_lib_add":      "在 Jackett 中添加",
 		"jk_lib_activate": "激活到本地",
 		"idx_batch_add":   "批量添加选中",
+		"idx_lang":        "语言",
+		"idx_source":      "来源",
+		"idx_activated":   "已激活",
+		"idx_jk_activated": "已在本地激活",
+		"idx_activate_hint": "激活到本地列表",
+		"idx_jk_delete_hint": "从 Jackett 删除此索引器",
+		"jk_search_ph":    "搜索索引器…",
+		"jk_no_match":     "没有匹配的索引器",
+		"edit_label":      "编辑",
+		"create":          "创建",
+		"delete_label":    "删除",
+		"configured":      "已配置",
+		"add":             "添加",
+		"new_idx":         "新建索引器",
+		"local":           "本地",
+		"remove":          "移除",
+		"remove_lib":      "移回索引器库",
 		"dedup":           "🗄️ 缓存库",
 		"dedup_title":     "缓存库",
 		"dedup_empty":     "暂无缓存记录。订阅自动执行后会自动记录已下载的种子。",
@@ -1337,6 +1354,23 @@ var translations = map[string]map[string]string{
 		"jk_lib_add":      "Add in Jackett",
 		"jk_lib_activate": "Activate",
 		"idx_batch_add":   "Add Selected",
+		"idx_lang":        "Lang",
+		"idx_source":      "Source",
+		"idx_activated":   "Activated",
+		"idx_jk_activated": "Activated locally",
+		"idx_activate_hint": "Activate to local list",
+		"idx_jk_delete_hint": "Delete from Jackett",
+		"jk_search_ph":    "Search indexers…",
+		"jk_no_match":     "No matching indexers",
+		"edit_label":      "Edit",
+		"create":          "Create",
+		"delete_label":    "Delete",
+		"configured":      "Configured",
+		"add":             "Add",
+		"new_idx":         "New Indexer",
+		"local":           "Local",
+		"remove":          "Remove",
+		"remove_lib":      "Move to Library",
 		"dedup":           "🗄️ Cache",
 		"dedup_title":     "Cache Library",
 		"dedup_empty":     "No cache records yet. They are created automatically when subscriptions run.",
@@ -2607,21 +2641,21 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </h2>
       {{if .IndexerList}}
       <table class="tbl" id="idx-active">
-        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th>来源</th><th>{{index .T "idx_health"}}</th><th></th></tr></thead>
+        <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>{{index .T "idx_lang"}}</th><th>{{index .T "idx_source"}}</th><th>{{index .T "idx_health"}}</th><th></th></tr></thead>
         <tbody>
         {{range .IndexerList}}<tr id="row-{{.ID}}">
           <td>{{if .SiteLink}}<a href="{{.SiteLink}}" target="_blank">{{.Name}}</a>{{else}}<strong>{{.Name}}</strong>{{end}}<br><small class="err-msg" style="color:var(--danger);">{{.LastError}}</small></td>
           <td class="muted">{{.Type}}</td>
           <td class="muted" style="font-size:11px;">{{.ID}}</td>
           <td class="muted">{{.Language}}</td>
-          <td><span style="font-size:10px;padding:1px 5px;border-radius:4px;color:#fff;{{if eq .Source "jackett"}}background:var(--accent-2);{{else}}background:var(--muted);{{end}}">{{if eq .Source "jackett"}}Jackett{{else}}本地{{end}}</span></td>
+          <td><span style="font-size:10px;padding:1px 5px;border-radius:4px;color:#fff;{{if eq .Source "jackett"}}background:var(--accent-2);{{else}}background:var(--muted);{{end}}">{{if eq .Source "jackett"}}Jackett{{else}}{{index $.T "local"}}{{end}}</span></td>
           <td><span class="health-dot" style="color:{{if .Healthy}}var(--accent-2){{else}}var(--danger){{end}};" title="{{if .LastTest}}{{.LastTest}}{{end}}">●</span></td>
           <td style="white-space:nowrap;">
             {{if eq .Source "jackett"}}
-            <button onclick="jkDeactivate('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="移除">−</button>
+            <button onclick="jkDeactivate('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="{{index $.T "remove"}}">−</button>
             {{else}}
             {{if .HasLogin}}<button onclick="showLogin('{{.ID}}','{{.Name}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--warn);">🔑</button>{{end}}
-            <button onclick="deactivateIdx('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="移回索引器库">−</button>
+            <button onclick="deactivateIdx('{{.ID}}')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--danger);" title="{{index $.T "remove_lib"}}">−</button>
             {{end}}
         </tr>{{end}}
         </tbody>
@@ -2639,7 +2673,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </h2>
       {{if .IndexerLibrary}}
       <table class="tbl" id="idx-library">
-        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead>
+        <thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>{{index .T "idx_lang"}}</th><th></th></tr></thead>
         <tbody>
         {{range .IndexerLibrary}}
           <tr id="lib-{{.ID}}"{{if .Enabled}} style="opacity:0.6"{{end}}>
@@ -2673,7 +2707,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <button onclick="showJKAddModal()" id="jk-add-btn" style="margin:0 0 0 8px;padding:4px 12px;font-size:12px;background:var(--accent-2);">{{index .T "jk_add_lib"}}</button>
         {{if not .JackettURL}}<a href="/settings" style="font-size:12px;margin-left:8px;color:var(--accent);">⚙ {{index .T "jk_lib_config"}}</a>{{end}}
       </h2>
-      <div id="jk-content"><span class="hint">⏳ 加载中...</span></div>
+      <div id="jk-content"><span class="hint">⏳ {{index .T "loading"}}</span></div>
     </div>
 
     <script>
@@ -2729,7 +2763,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         body+='<div style="margin-top:8px;"><label>{{index .T "password_label"}}</label><input id="login-pass" type="password" style="width:100%;"></div>';
         showModal('{{index .T "login_label"}} - '+name, body, [
           {text:'{{index .T "cancel"}}',cls:'var(--danger)',cb:function(){closeModal()}},
-          {text:'{{index .T "login_label"}}',cs:'var(--accent-2)',cb:async function(){
+          {text:'{{index .T "login_label"}}',cls:'var(--accent-2)',cb:async function(){
             var u=document.getElementById('login-user').value;
             var p=document.getElementById('login-pass').value;
             if(!u||!p){showModal('{{index .T "error_label"}}','<p>{{index .T "credentials_required"}}</p>');return;}
@@ -2763,19 +2797,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var r=await fetch('/indexers/edit?id='+encodeURIComponent(id));
           var j=await r.json();
           if(!j.ok){alertModal(j.msg);return;}
-          showModal('Edit: '+name,
+          showModal('{{index .T "edit_label"}}: '+name,
             '<textarea id="edit-yaml" style="width:100%;height:400px;font-family:monospace;font-size:12px;">'+
             j.yaml.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>',
             [
-              {text:'Cancel',cls:'var(--danger)',cb:function(){closeModal()}},
-              {text:'Save',cls:'var(--accent-2)',cb:async function(){
+              {text:'{{index .T "cancel"}}',cls:'var(--danger)',cb:function(){closeModal()}},
+              {text:'{{index .T "save"}}',cls:'var(--accent-2)',cb:async function(){
                 var y=document.getElementById('edit-yaml').value;
                 var r2=await fetch('/indexers/edit?id='+encodeURIComponent(id),
                   {method:'POST',body:new URLSearchParams({yaml:y}),
                    headers:{'X-Requested-With':'XMLHttpRequest'}});
                 var j2=await r2.json();
                 if(j2.ok){closeModal();location.reload();}
-                else{alertModal('Save failed: '+j2.msg);}
+                else{alertModal('{{index .T "save"}} failed: '+j2.msg);}
               }}
             ]
           );
@@ -2800,18 +2834,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
 
       function newIdx(){
-        showModal('New Indexer',
+        showModal('{{index .T "new_idx"}}',
           '<label>ID:</label><input id="new-id" style="width:100%;" placeholder="e.g. mysite">',
           [
-            {text:'Cancel',cls:'var(--danger)',cb:function(){closeModal()}},
-            {text:'Create',cls:'var(--accent-2)',cb:async function(){
+            {text:'{{index .T "cancel"}}',cls:'var(--danger)',cb:function(){closeModal()}},
+            {text:'{{index .T "create"}}',cls:'var(--accent-2)',cb:async function(){
               var id=document.getElementById('new-id').value.trim();
               if(!id){alertModal('Please enter an ID');return;}
               var tmpl='---\nid: '+id+'\nname: My Site\ntype: public\nlanguage: zh-CN\nlinks:\n  - https://\n\ncaps:\n  categories:\n    1: Other\n  modes:\n    search: [q]\n\nsearch:\n  paths:\n    - path: /search\n  inputs:\n    q: "___KEYWORDS___"\n  rows:\n    selector: table tr\n  fields:\n    title:\n      selector: a\n    details:\n      selector: a\n      attribute: href\n    download:\n      selector: a[href*=magnet]\n      attribute: href\n    size:\n      selector: .size\n    date:\n      selector: .date\n    seeders:\n      selector: .seeders\n';
               closeModal();
-              showModal('New: '+id,'<textarea id="new-yaml" style="width:100%;height:400px;font-family:monospace;font-size:12px;">'+tmpl.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>',[
-                {text:'Cancel',cls:'var(--danger)',cb:function(){closeModal()}},
-                {text:'Save',cls:'var(--accent-2)',cb:async function(){
+              showModal('{{index .T "new_idx"}}: '+id,'<textarea id="new-yaml" style="width:100%;height:400px;font-family:monospace;font-size:12px;">'+tmpl.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>',[
+                {text:'{{index .T "cancel"}}',cls:'var(--danger)',cb:function(){closeModal()}},
+                {text:'{{index .T "save"}}',cls:'var(--accent-2)',cb:async function(){
                   var y=document.getElementById('new-yaml').value;
                   var r=await fetch('/indexers/edit?id='+encodeURIComponent(id),{method:'POST',body:new URLSearchParams({yaml:y}),headers:{'X-Requested-With':'XMLHttpRequest'}});
                   var j=await r.json();
@@ -2839,7 +2873,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           // Use server-provided active list (always accurate, not stale DOM)
           var jkActiveIds=new Set(j.active||[]);
           cnt.textContent=j.data.length;
-          var h='<table class="tbl"><thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
+          var h='<table class="tbl"><thead><tr><th></th><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "jk_id"}}</th><th>{{index .T "idx_lang"}}</th><th></th></tr></thead><tbody>';
           j.data.forEach(function(x){
             var isActive=jkActiveIds.has(x.id);
             h+='<tr id="jk-row-'+x.id+'"'+(isActive?' style="opacity:0.6"':'')+'><td>'+(isActive?'':'<input type="checkbox" name="jk_ids" value="'+x.id+'" style="width:auto;margin:0;">')+'</td>';
@@ -2849,11 +2883,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             h+='<td class="muted">'+(x.language||'')+'</td>';
             h+='<td style="white-space:nowrap;">';
             if(isActive){
-              h+='<span style="font-size:11px;color:var(--accent-2);" title="已在本地激活">已激活</span> ';
+              h+='<span style="font-size:11px;color:var(--accent-2);" title="{{index .T "idx_jk_activated"}}">{{index .T "idx_activated"}}</span> ';
             }else{
-              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="激活到本地列表">+</button> ';
+              h+='<button onclick="jkActivate(\''+x.id+'\')" style="padding:2px 6px;font-size:11px;margin:0;background:var(--accent);" title="{{index .T "idx_activate_hint"}}">+</button> ';
             }
-            h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\',\''+x.name.replace(/'/g,"\\'")+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="从 Jackett 删除此索引器">✕</button>';
+            h+='<button onclick="jkRemoveFromJackett(\''+x.id+'\',\''+x.name.replace(/'/g,"\\'")+'\')" style="padding:2px 6px;font-size:10px;margin:0 0 0 2px;background:var(--danger);" title="{{index .T "idx_jk_delete_hint"}}">✕</button>';
             h+='</td></tr>';
           });
           h+='</tbody></table>';
@@ -2869,8 +2903,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var jkAllData=[];
       async function showJKAddModal(){
         showModal('{{index .T "jk_add_lib"}}',
-          '<div style="margin-bottom:10px;"><input id="jk-add-filter" placeholder="搜索索引器…" style="width:100%;padding:8px;" oninput="filterJKAddList()" autofocus></div>'+
-          '<div id="jk-add-list" style="max-height:50vh;overflow-y:auto;">⏳ 加载中...</div>',
+          '<div style="margin-bottom:10px;"><input id="jk-add-filter" placeholder="{{index .T "jk_search_ph"}}" style="width:100%;padding:8px;" oninput="filterJKAddList()" autofocus></div>'+ 
+          '<div id="jk-add-list" style="max-height:50vh;overflow-y:auto;">⏳ {{index .T "loading"}}</div>',
           [{text:'{{index .T "close_btn"}}',cls:'var(--danger)',cb:function(){closeModal()}}]);
         try{
           var r=await fetch('/indexers/jackett/all');
@@ -2883,7 +2917,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
       function renderJKAddList(filter){
         filter=(filter||'').toLowerCase();
-        var h='<table class="tbl"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>Lang</th><th></th></tr></thead><tbody>';
+        var h='<table class="tbl"><thead><tr><th>{{index .T "name"}}</th><th>{{index .T "sub_type"}}</th><th>{{index .T "idx_lang"}}</th><th></th></tr></thead><tbody>';
         jkAllData.forEach(function(x){
           if(filter&&x.name.toLowerCase().indexOf(filter)<0&&x.id.toLowerCase().indexOf(filter)<0)return;
           h+='<tr><td>'+(x.site_link?'<a href="'+x.site_link+'" target="_blank">'+x.name+'</a>':'<strong>'+x.name+'</strong>')+'</td>';
@@ -2891,14 +2925,14 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           h+='<td class="muted">'+(x.language||'')+'</td>';
           h+='<td style="white-space:nowrap;">';
           if(x.configured){
-            h+='<span style="font-size:11px;color:var(--muted);">已配置</span>';
+            h+='<span style="font-size:11px;color:var(--muted);">{{index .T "configured"}}</span>';
           }else{
-            h+='<button onclick="jkAddToJackett(\''+x.id+'\')" style="padding:2px 8px;font-size:11px;margin:0;background:var(--accent-2);">添加</button>';
+            h+='<button onclick="jkAddToJackett(\''+x.id+'\')" style="padding:2px 8px;font-size:11px;margin:0;background:var(--accent-2);">{{index .T "add"}}</button>';
           }
           h+='</td></tr>';
         });
         h+='</tbody></table>';
-        document.getElementById('jk-add-list').innerHTML=h||'<div class="hint">没有匹配的索引器</div>';
+        document.getElementById('jk-add-list').innerHTML=h||'<div class="hint">{{index .T "jk_no_match"}}</div>';
       }
 
       function filterJKAddList(){
