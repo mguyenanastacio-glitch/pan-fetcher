@@ -6461,7 +6461,18 @@ func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	if subKey == "" {
 		subKey = rssURL
 	}
-	go s.Agent.ProcessRSSFeed(rssURL, cid, savepath, filter, subKey)
+	go func() {
+		before := globalDedup.SubCount(subKey)
+		names := s.Agent.ProcessRSSFeed(rssURL, cid, savepath, filter, subKey)
+		after := globalDedup.SubCount(subKey)
+		newItems := after - before
+		if newItems > 0 {
+			notify.RecordItems(subKey, names)
+			ws := s.loadWebSettings()
+			notify.Send(notify.RSSFound(subKey, newItems, names), ws.NotifyRSS)
+		}
+		log.Printf("[subs] run completed: %s, new=%d", subKey, newItems)
+	}()
 	log.Printf("[subs] run triggered: %s", subKey)
 	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
 		w.Header().Set("Content-Type", "application/json")
