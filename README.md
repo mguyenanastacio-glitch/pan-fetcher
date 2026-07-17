@@ -112,13 +112,14 @@ cd pan-fetcher && go build -ldflags="-s -w -X github.com/mguyenanastacio-glitch/
 | 页面 | 路由 | 说明 |
 |------|------|------|
 | 仪表盘 | `/` | 统计面板、最近新增资源、运行时长 |
-| 离线下载 | `/tasks` | 磁力提交，分页任务列表，清理 |
+| 离线下载 | `/tasks` | 磁力提交、任务列表（分页+分栏）、清理 |
 | 资源搜索 | `/search` | 跨站聚合搜索、Jackett 集成、分页浏览、一键订阅 |
 | 索引器 | `/indexers` | 本地/Jackett 索引器激活、测试、YAML 编辑 |
 | 文件管理 | `/fs` | 115 目录浏览、新建、移动、复制 |
 | 订阅管理 | `/subs` | RSS 增删改、手动执行、缓存查看 |
 | 运行日志 | `/log` | 实时日志，自动刷新 |
-| 设置 | `/settings` | Cookies、扫码登录、代理、密码、Jackett、分页大小 |
+| 设置 | `/settings` | Cookies、扫码登录、代理、密码、Jackett、分页大小、版本更新 |
+| 关于 | `/about` | 版本信息、技术栈、致谢 |
 
 ## ⌨️ CLI 命令
 
