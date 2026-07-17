@@ -203,7 +203,7 @@ type dedupEntry struct {
 var srv *http.Server
 
 // Version is set via ldflags at build time: -X server.Version=v0.x.x
-var Version = "1.0.4"
+var Version = "1.0.5"
 
 var rssJsonPath = "rss.json"
 
@@ -2231,7 +2231,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <!-- offline task list -->
     {{if eq .Page "tasks"}}
     <div class="card panel" style="margin-top:16px;">
-      <h2>{{index .T "offline_tasks"}} ({{.TaskCount}})
+      <h2 id="task-heading">{{index .T "offline_tasks"}} (<span id="task-total">{{.TaskCount}}</span>)
         <span style="font-weight:400;font-size:12px;margin-left:8px;">
           <span id="tab-downloading" style="cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);" onclick="switchTaskTab('downloading')">{{index .T "downloading"}} <span id="cnt-downloading"></span></span>
           <span style="margin:0 8px;color:var(--line);">|</span>
@@ -2296,11 +2296,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var tbody=document.querySelector('#task-table tbody');
           if(!tbody)return;
           // Update total count in heading
-          var h2=document.querySelector('h2');
-          if(h2&&j.count!==undefined){
-            var txt=h2.childNodes[0];
-            if(txt)txt.textContent='{{index .T "offline_tasks"}} ('+j.count+') ';
-          }
+          var totalEl=document.getElementById('task-total');
+          if(totalEl&&j.count!==undefined)totalEl.textContent=j.count;
           if(!j.tasks||j.tasks.length===0){
             tbody.innerHTML='<tr><td colspan="4" class="hint">{{index .T "no_tasks"}}</td></tr>';
             ['downloading','failed','done'].forEach(function(s){document.getElementById('cnt-'+s).textContent='(0)';});
@@ -4068,9 +4065,10 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	data := s.pageDataWithCache("tasks", "", "")
+	data := s.pageData("", "")
 	data.Page = "tasks"
 	data.HasAgent = s.Agent != nil
+	data.TaskCount = s.taskCountCache
 	if err := dashboardTemplate.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
