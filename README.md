@@ -20,72 +20,59 @@
 
 ### 🔍 聚合搜索
 
-4 个内置 BT 索引器（ACG.RIP · 动漫花园 · Mikan · Nyaa.si），Cardigann YAML 兼容可自行扩展。集成 **Jackett / Prowlarr**，一键激活其管理的数百个索引器。分类筛选 · 关键词实时过滤 · 分页浏览（带行序号） · 一键订阅。搜索结果自动去重（InfoHash / Magnet / Title+Size 三级），翻页无重复。
+内置多个 BT 索引器，Cardigann YAML 兼容可自行扩展。集成 Jackett / Prowlarr，聚合数百个索引器。支持分类筛选、关键词过滤、分页浏览、一键订阅。搜索结果自动去重。
 
 <p align="center"><img src=".github/images/1738.jpg" alt="资源搜索" width="70%"></p>
 
 ### 📡 Jackett / Prowlarr 集成
 
-自动发现 Jackett 实例中的所有索引器，批量激活/停用、连接测试。支持 Admin 密码认证（WebUI 登录密码）。搜索结果标注来源（本地 / Jackett），可独立选择参与搜索的索引器。从 Jackett 库一键添加公开索引器、删除已配置索引器。
+自动发现实例中的全部索引器，批量激活停用、连接测试。搜索结果标注来源，可独立选择参与搜索的索引器。
 
 <p align="center"><img src=".github/images/1741.jpg" alt="索引器" width="70%"></p>
 
 ### 📋 RSS 订阅
 
-定时抓取 · info hash 去重 · 关键词/正则过滤 · 启用/禁用开关 · 缓存管理。支持 Jackett-only 索引器的 RSS 聚合订阅。
+定时抓取、智能去重、关键词过滤、缓存管理。支持本地和 Jackett 索引器的 RSS 聚合。
 
 <p align="center"><img src=".github/images/1746.jpg" alt="订阅管理" width="70%"></p>
 
 ### 📥 离线下载
 
-磁力 / ed2k / http 批量提交 · 下载中 / 失败 / 已完成分页 · 任务清理。
+磁力 / ed2k / http 批量提交，状态分栏，任务清理。
 
 <p align="center"><img src=".github/images/1740.jpg" alt="离线下载" width="70%"></p>
 
 ### 📂 文件管理
 
-115 网盘目录浏览 · 新建文件夹 · 重命名 · 移动 · 复制 · 删除。
+115 网盘目录浏览、新建、重命名、移动、复制、删除。
 
 <p align="center"><img src=".github/images/1745.jpg" alt="文件管理" width="70%"></p>
 
 ### 📊 仪表盘
 
-推送统计 · 订阅活跃度 · 索引器数量（含 Jackett 激活数） · 缓存条目 · 运行时长 · 连接状态 · 最近新增资源。
+运行概览：推送统计、订阅状态、索引器数量、缓存条目、最近新增资源。
 
 <p align="center"><img src=".github/images/1760.jpg" alt="仪表盘" width="70%"></p>
 
 ### 🔔 通知推送
 
-企业微信 Webhook · 任务完成/RSS 新资源/运行日志 独立推送开关 · 一键测试 · 实时日志流。
+企业微信 Webhook 集成，支持多类型推送开关，实时日志流。
 
 <p align="center"><img src=".github/images/1747.jpg" alt="运行日志" width="70%"></p>
 
 ### ⚙️ 部署友好
 
-Docker 一键部署 · Linux systemd 安装脚本 · 5 平台预编译二进制。
+Docker 一键部署、Linux systemd 安装脚本、多平台预编译二进制、Web 界面配置。
 
 <p align="center"><img src=".github/images/1755.jpg" alt="设置" width="70%"></p>
 
 ## � 与 115 网盘的交互
 
-pan-fetcher 通过 115 官方 API 操作你的网盘，登录方式有两种：
+pan-fetcher 通过 115 官方 API 操作网盘，支持 Cookies 或扫码登录。
 
-| 方式 | 说明 |
-|------|------|
-| **Cookies 登录** | 从浏览器复制 115 登录 Cookies，粘贴到设置页即可 |
-| **扫码登录** | 设置页点击扫码，用 115 手机 App 扫描二维码登录（推荐）|
+核心流程：搜索资源 → 添加订阅 → 定时抓取 → 自动推送离线下载 → 文件管理。
 
-登录后可执行的操作：
-
-```
-搜索资源 → RSS 订阅 → 定时抓取 → 自动推送到 115 离线任务 → 文件管理
-```
-
-- **离线下载**：将磁力/ed2k/http 链接提交到 115 离线服务器，由 115 云端执行下载
-- **文件管理**：浏览、新建、重命名、移动、复制、删除 115 网盘文件
-- **订阅流程**：RSS 解析 → 提取 magnet / info hash → 去重检查 → `POST /add` 提交 → 115 调度下载
-
-> 所有操作均通过 115 官方 API (`webapi.115.com` / `proapi.115.com`) 进行，不传输数据到第三方。
+> 所有操作均通过 115 官方 API 进行，数据不外传。
 
 ## �🚀 快速开始
 
@@ -127,26 +114,24 @@ cd pan-fetcher && go build -ldflags="-s -w -X github.com/mguyenanastacio-glitch/
 
 | 页面 | 路由 | 说明 |
 |------|------|------|
-| 仪表盘 | `/` | 统计面板、最近新增资源、运行时长 |
-| 离线下载 | `/tasks` | 磁力提交、任务列表（分页+分栏）、清理 |
-| 资源搜索 | `/search` | 跨站聚合搜索、Jackett 集成、分页浏览、一键订阅 |
-| 索引器 | `/indexers` | 本地/Jackett 索引器激活、测试、YAML 编辑 |
-| 文件管理 | `/fs` | 115 目录浏览、新建、移动、复制 |
-| 订阅管理 | `/subs` | RSS 增删改、手动执行、缓存查看 |
-| 运行日志 | `/log` | 实时日志，自动刷新 |
-| 设置 | `/settings` | Cookies、扫码登录、代理、密码、Jackett、分页大小、版本更新 |
-| 关于 | `/about` | 版本信息、技术栈、致谢 |
+| 仪表盘 | `/` | 运行概览、最近新增资源 |
+| 离线下载 | `/tasks` | 批量提交、任务管理 |
+| 资源搜索 | `/search` | 聚合搜索、一键订阅 |
+| 索引器 | `/indexers` | 激活管理、连接测试 |
+| 文件管理 | `/fs` | 115 网盘浏览与操作 |
+| 订阅管理 | `/subs` | RSS 增删改、缓存管理 |
+| 运行日志 | `/log` | 实时日志 |
+| 设置 | `/settings` | 登录、代理、通知、Jackett、版本更新 |
+| 关于 | `/about` | 版本与致谢 |
 
 ## ⌨️ CLI 命令
 
 ```bash
 pan-fetcher server                     # 启动 Web 面板
-pan-fetcher magnet --link "magnet:..." # 添加磁力
-pan-fetcher fs ls [dir]                # 列出目录
-pan-fetcher fs shell                   # 交互式 Shell（Tab 补全）
+pan-fetcher magnet --link "magnet:..." # 添加离线任务
+pan-fetcher fs ls [dir]                # 浏览网盘目录
+pan-fetcher fs shell                   # 交互式 Shell
 ```
-
-完整命令：`ls`, `mkdir`, `rename`, `mv`, `rm`, `cp`, `stat`, `pwd`, `flatten`, `search-mv`
 
 ## 🔧 配置参考
 
@@ -185,15 +170,15 @@ Automated media downloader for 115 cloud storage. Search across BT indexers, sub
 
 ### Features
 
-- **🔍 Aggregated Search** — 4 built-in indexers + Jackett/Prowlarr for hundreds more. Category & keyword filters, paginated with row numbers, auto-dedup (InfoHash/Magnet/Title+Size), one-click subscribe.
-- **📡 Jackett/Prowlarr** — Auto-discover, batch activate/deactivate, Admin password auth, add/remove indexers via API, source labels.
-- **📋 RSS Subscriptions** — Auto-fetch, info hash dedup, keyword filter, Jackett-only feed support.
+- **🔍 Aggregated Search** — Built-in indexers + Jackett/Prowlarr for hundreds more. Category & keyword filters, auto-dedup, one-click subscribe.
+- **📡 Jackett/Prowlarr** — Auto-discover, batch activate, source labels.
+- **📋 RSS Subscriptions** — Auto-fetch, smart dedup, keyword filter.
 - **📥 Offline Download** — Magnet/ed2k/http batch submit with status tabs.
-- **📂 File Manager** — Browse, rename, move, copy, delete 115 cloud files.
-- **📊 Dashboard** — Push stats, active subs, indexer count, cache entries, uptime, recent items.
-- **🔔 Notifications** — WeChat Work webhook with per-event toggles & resource names, real-time log streaming.
+- **📂 File Manager** — Browse and manage 115 cloud files.
+- **📊 Dashboard** — Stats overview, recent items.
+- **🔔 Notifications** — WeChat Work webhook with per-event toggles.
 - **🐳 Docker** — One-command deploy via `docker-compose`.
-- **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, self-restart, in-app update check.
+- **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, in-app update.
 
 ### Quick Start
 
