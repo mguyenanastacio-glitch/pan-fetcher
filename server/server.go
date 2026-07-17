@@ -83,6 +83,8 @@ type Server struct {
 	// Lightweight caches for expensive per-request operations
 	connCheckLoggedIn bool
 	connCheckTime     time.Time
+	taskCountCache    int
+	taskCountCacheAt  time.Time
 	entryCache        map[string]p115pkg.DirEntry
 	entryCacheMu      sync.Mutex
 }
@@ -354,6 +356,17 @@ func (d *dedupCache) SubCount(subKey string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.subs[subKey])
+}
+
+// TotalCount returns the total number of cached entries across all subs.
+func (d *dedupCache) TotalCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := 0
+	for _, set := range d.subs {
+		n += len(set)
+	}
+	return n
 }
 
 // Hashes returns the list of info hashes for a subKey.
@@ -3994,10 +4007,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data.HasAgent = s.Agent != nil
 	data.HasPassword = webPassword != ""
 
-	// Compute dashboard stats
+	// Compute dashboard stats — use cached task count
 	if s.Agent != nil {
-		tasks, _ := s.Agent.ListTasks()
-		data.DashStats.TotalTasks = len(tasks)
+		if time.Since(s.taskCountCacheAt) > 30*time.Second {
+			if tasks, err := s.Agent.ListTasks(); err == nil {
+				s.taskCountCache = len(tasks)
+				s.taskCountCacheAt = time.Now()
+			}
+		}
+		data.DashStats.TotalTasks = s.taskCountCache
 	}
 
 	feeds := s.readRssFeeds()
@@ -4019,9 +4037,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		s.jackettActiveMu.Unlock()
 	}
 
-	for _, set := range globalDedup.subs {
-		data.DashStats.CacheEntries += len(set)
-	}
+	data.DashStats.CacheEntries = globalDedup.TotalCount()
 
 	data.DashStats.Uptime = formatDuration(time.Since(s.startTime))
 	data.DashStats.RecentItems = notify.GetRecentItems()
