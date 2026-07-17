@@ -95,7 +95,7 @@ docker compose up -d
 
 浏览器打开 `http://<IP>:8115`，进入设置页完成配置。
 
-> Docker 镜像同时发布在 [Docker Hub](https://hub.docker.com/r/mguyenanastacio/pan-fetcher) 和 [GHCR](https://github.com/mguyenanastacio-glitch/pan-fetcher/pkgs/container/pan-fetcher)。
+> 也提供 [GHCR 镜像](https://github.com/mguyenanastacio-glitch/pan-fetcher/pkgs/container/pan-fetcher)。
 
 ### Linux 一键脚本
 
@@ -204,7 +204,7 @@ EOF
 docker compose up -d
 ```
 
-> Images available on [Docker Hub](https://hub.docker.com/r/mguyenanastacio/pan-fetcher) and [GHCR](https://github.com/mguyenanastacio-glitch/pan-fetcher/pkgs/container/pan-fetcher).
+> Also available on [GHCR](https://github.com/mguyenanastacio-glitch/pan-fetcher/pkgs/container/pan-fetcher).
 
 **Linux script:** `curl -fsSL https://.../install-release.sh | sudo bash`
 

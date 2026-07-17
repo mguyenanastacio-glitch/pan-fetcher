@@ -1,8 +1,7 @@
 services:
   pan-fetcher:
-    # Use Docker Hub or GHCR image:
-    # image: mguyenanastacio/pan-fetcher:latest
-    image: ghcr.io/mguyenanastacio-glitch/pan-fetcher:latest
+    image: mguyenanastacio/pan-fetcher:latest
+    # Alternative: ghcr.io/mguyenanastacio-glitch/pan-fetcher:latest
     container_name: pan-fetcher
     restart: unless-stopped
     ports:
