@@ -2279,8 +2279,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         document.getElementById('cnt-done').textContent='('+c.done+')';
         switchTaskTab('downloading');
       })();
-      // Auto-refresh tasks every 10s
-      var taskRefreshTimer=setInterval(refreshTasks,10000);
+      // Auto-refresh tasks every 30s
+      var taskRefreshTimer=setInterval(refreshTasks,30000);
       async function refreshTasks(){
         try{
           var r=await fetch('/api/tasks');
@@ -2318,7 +2318,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     </div>
     <script>
       var logLastLine='';
-      var logTimer=setInterval(refreshLogs,3000);
+      var logTimer=setInterval(refreshLogs,5000);
       async function refreshLogs(){
         try{
           var url='/api/logs';
@@ -2435,33 +2435,25 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     // Persist search state across page navigations
     (function(){
-      var key='pan-fetcher-search';
       var pgKey='pan-fetcher-page';
       {{if .SearchQuery}}
-      sessionStorage.setItem(key,document.querySelector('.card.panel').innerHTML);
-      // Save pagination state AND query params so goToPage works on re-entry
+      // Save query params so we can restore on re-entry
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
       sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
       {{else}}
-      var saved=sessionStorage.getItem(key);
-      if(saved){
-        var card=document.querySelector('.card.panel');
-        if(card&&!document.querySelector('#search-form'))return;
-        if(card)card.innerHTML=saved;
-        // Restore pagination state
-        var pgState=sessionStorage.getItem(pgKey);
-        if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;}catch(e){}}
-        // Re-render pagination bar (deferred until shared scripts load)
-        setTimeout(function(){if(typeof renderPagination==='function')renderPagination();},0);
+      // Restore previous search by re-submitting the query (lightweight, no HTML storage)
+      var savedQuery=sessionStorage.getItem('pan-fetcher-query');
+      var savedPage=sessionStorage.getItem(pgKey);
+      if(savedPage){try{var ps=JSON.parse(savedPage);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;}catch(e){}}
+      if(savedQuery && !{{.SearchQuery}}){
+        var fd=new URLSearchParams(savedQuery);
+        if(fd.get('q')){
+          document.getElementById('search-q').value=fd.get('q');
+          document.getElementById('search-form').submit();
+        }
       }
       {{end}}
-      // Apply keyword filter on load (deferred for script load order)
-      setTimeout(function(){
-        if(document.getElementById('search-keyword')&&document.getElementById('search-keyword').value.trim()){
-          filterResults();
-        }
-      }, 0);
     })();
     </script>
     {{end}}
@@ -2511,13 +2503,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <!-- shared utility functions -->
     <script>
       function refreshSearch(){
-        sessionStorage.removeItem('pan-fetcher-search');
         sessionStorage.removeItem('pan-fetcher-page');
         sessionStorage.removeItem('pan-fetcher-query');
         location.href='/search';
       }
       function clearSearch(){
-        sessionStorage.removeItem('pan-fetcher-search');
         sessionStorage.removeItem('pan-fetcher-page');
         sessionStorage.removeItem('pan-fetcher-query');
         location.href='/search';
@@ -6699,8 +6689,8 @@ func (s *Server) pageDataWithCache(page, message, errMsg string) dashboardData {
 
 		data.Cookies = s.Agent.LoadCookiesStr()
 
-		// Only load tasks for home/tasks page (JS already polls /api/tasks)
-		if page == "" || page == "home" || page == "tasks" {
+		// Only load full task list for the tasks page; dashboard just needs count
+		if page == "tasks" {
 			tasks, err := s.Agent.ListTasks()
 			if err == nil {
 				data.TaskCount = len(tasks)
