@@ -2321,20 +2321,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var logTimer=setInterval(refreshLogs,3000);
       async function refreshLogs(){
         try{
-          var r=await fetch('/api/logs');
+          var url='/api/logs';
+          if(logLastLine) url+='?since='+encodeURIComponent(logLastLine);
+          var r=await fetch(url);
           var j=await r.json();
           if(!j.lines||j.lines.length===0)return;
           var panel=document.getElementById('log-panel');
           var first=j.lines[0];
-          if(first===logLastLine)return;
-          // Find where new lines start (before previously known newest)
-          var endIdx=j.lines.length;
-          for(var i=0;i<j.lines.length;i++){if(j.lines[i]===logLastLine){endIdx=i;break;}}
-          // Prepend new lines at top
+          // Append new lines at bottom
           var frag=document.createDocumentFragment();
-          for(var i=0;i<endIdx;i++){frag.appendChild(document.createTextNode(j.lines[i]+'\n'));}
-          panel.insertBefore(frag,panel.firstChild);
-          logLastLine=first;
+          for(var i=0;i<j.lines.length;i++){frag.appendChild(document.createTextNode(j.lines[i]+'\n'));}
+          panel.appendChild(frag);
+          logLastLine=j.lines[j.lines.length-1];
         }catch(e){}
       }
       (function(){var p=document.getElementById('log-panel');if(p){var t=p.textContent.trim();if(t){var lines=t.split('\n');logLastLine=lines[0].trim();}}})();
@@ -5347,19 +5345,49 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				localIndexers = append(localIndexers, id)
 			}
 		}
-		// If user selected ONLY Jackett indexers, skip local search entirely
-		var se indexer.SearchAllErrors
-		if len(indexers) > 0 && len(localIndexers) == 0 && hasJackettSelection {
-			se = indexer.SearchAllErrors{Errors: make(map[string]string)}
-		} else {
-			se = s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
-				Query:    q,
-				Category: category,
-				Sort:     sortBy,
-				Indexers: localIndexers,
-				Limit:    500,
-			})
+		// Run local and Jackett searches concurrently
+		type searchResult struct {
+			local   indexer.SearchAllErrors
+			jackett []jackett.Result
+			jerr    error
 		}
+		ch := make(chan searchResult, 1)
+		go func() {
+			var sr searchResult
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// Local indexer search
+			go func() {
+				defer wg.Done()
+				if !(len(indexers) > 0 && len(localIndexers) == 0 && hasJackettSelection) {
+					sr.local = s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
+						Query:    q,
+						Category: category,
+						Sort:     sortBy,
+						Indexers: localIndexers,
+						Limit:    500,
+					})
+				} else {
+					sr.local = indexer.SearchAllErrors{Errors: make(map[string]string)}
+				}
+			}()
+
+			// Jackett search
+			go func() {
+				defer wg.Done()
+				if s.JackettURL != "" && s.JackettAPIKey != "" && (len(indexers) == 0 || hasJackettSelection) {
+					jc := s.jackettConfig()
+					sr.jackett, sr.jerr = jackett.Search(jc, q, nil, 0)
+				}
+			}()
+
+			wg.Wait()
+			ch <- sr
+		}()
+
+		sr := <-ch
+		se := sr.local
 		for i := range se.Results {
 			se.Results[i].SizeFmt = formatSize(se.Results[i].Size)
 			if !se.Results[i].PublishDate.IsZero() {
@@ -5367,52 +5395,49 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Jackett search (if configured) — only when no filter or Jackett selected
-		if s.JackettURL != "" && s.JackettAPIKey != "" && (len(indexers) == 0 || hasJackettSelection) {
-			jc := s.jackettConfig()
-			if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
-				for _, r := range jr {
-					trackerLower := strings.ToLower(r.Tracker)
-					if !jackettActiveSet[trackerLower] {
+		// Process Jackett results (already fetched in parallel above)
+		if sr.jerr == nil {
+			for _, r := range sr.jackett {
+				trackerLower := strings.ToLower(r.Tracker)
+				if !jackettActiveSet[trackerLower] {
+					continue
+				}
+				if len(jackettSelectedIDs) > 0 {
+					match := false
+					for _, jid := range jackettSelectedIDs {
+						if strings.ToLower(jid) == trackerLower {
+							match = true
+							break
+						}
+					}
+					if !match {
 						continue
 					}
-					if len(jackettSelectedIDs) > 0 {
-						match := false
-						for _, jid := range jackettSelectedIDs {
-							if strings.ToLower(jid) == trackerLower {
-								match = true
-								break
-							}
-						}
-						if !match {
-							continue
-						}
-					}
-					var pubDate time.Time
-					if r.PublishDate != "" {
-						pubDate, _ = time.Parse(time.RFC1123Z, r.PublishDate)
-						if pubDate.IsZero() {
-							pubDate, _ = time.Parse(time.RFC1123, r.PublishDate)
-						}
-					}
-					se.Results = append(se.Results, indexer.SearchResult{
-						Title:       r.Title,
-						MagnetURL:   r.MagnetURI,
-						PageURL:     r.Link,
-						Size:        r.Size,
-						SizeFmt:     formatSize(r.Size),
-						DateFmt:     formatJackettDate(r.PublishDate),
-						Seeders:     r.Seeders,
-						IndexerName: "Jackett: " + r.TrackerName,
-						PublishDate: pubDate,
-					})
 				}
-			} else {
-				if se.Errors == nil {
-					se.Errors = make(map[string]string)
+				var pubDate time.Time
+				if r.PublishDate != "" {
+					pubDate, _ = time.Parse(time.RFC1123Z, r.PublishDate)
+					if pubDate.IsZero() {
+						pubDate, _ = time.Parse(time.RFC1123, r.PublishDate)
+					}
 				}
-				se.Errors["jackett"] = err.Error()
+				se.Results = append(se.Results, indexer.SearchResult{
+					Title:       r.Title,
+					MagnetURL:   r.MagnetURI,
+					PageURL:     r.Link,
+					Size:        r.Size,
+					SizeFmt:     formatSize(r.Size),
+					DateFmt:     formatJackettDate(r.PublishDate),
+					Seeders:     r.Seeders,
+					IndexerName: "Jackett: " + r.TrackerName,
+					PublishDate: pubDate,
+				})
 			}
+		} else if sr.jerr != nil {
+			if se.Errors == nil {
+				se.Errors = make(map[string]string)
+			}
+			se.Errors["jackett"] = sr.jerr.Error()
 		}
 		data.SearchQuery = q
 		data.SearchKeyword = keyword
@@ -5912,11 +5937,15 @@ func (s *Server) handleIndexers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch fresh Jackett indexers and prune stale activations
+	// Use cached Jackett data; trigger background refresh for next request
 	data.JackettURL = s.JackettURL
 	data.JackettAPIKey = s.JackettAPIKey
 	data.JackettAdminPassword = s.JackettAdminPassword
-	data.JackettLibrary = s.refreshJackettCache()
+	s.jackettCacheMu.Lock()
+	data.JackettLibrary = s.jackettCache
+	s.jackettCacheMu.Unlock()
+	// Background async refresh (don't block page load)
+	go s.refreshJackettCache()
 
 	// Add Jackett-activated indexers to active list (show both, label conflict)
 	s.jackettActiveMu.Lock()
