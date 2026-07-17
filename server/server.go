@@ -29,6 +29,7 @@ import (
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/indexer"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/jackett"
+	"github.com/mguyenanastacio-glitch/pan-fetcher/media"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/notify"
 	p115pkg "github.com/mguyenanastacio-glitch/pan-fetcher/p115"
 	"github.com/mguyenanastacio-glitch/pan-fetcher/rsssite"
@@ -181,6 +182,7 @@ type dashboardData struct {
 	JackettURL           string
 	JackettAPIKey        string
 	JackettAdminPassword string
+	TMDBAPIKey           string
 	AboutVersion         string
 	AutoUpdate      bool
 }
@@ -203,7 +205,7 @@ type dedupEntry struct {
 var srv *http.Server
 
 // Version is set via ldflags at build time: -X server.Version=v0.x.x
-var Version = "1.0.0"
+var Version = "1.1.0"
 
 var rssJsonPath = "rss.json"
 
@@ -609,6 +611,7 @@ type webSettings struct {
 	JackettURL           string `json:"jackett_url"`
 	JackettAPIKey        string `json:"jackett_apikey"`
 	JackettAdminPassword string `json:"jackett_admin_password"`
+	TMDBAPIKey           string `json:"tmdb_apikey"`
 	PageSize             int    `json:"page_size"`
 	AutoUpdate    bool   `json:"auto_update"`
 }
@@ -1698,12 +1701,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     .sidebar.collapsed { transform: translateX(-100%); }
     .sidebar-logo { padding: 16px 16px 4px; font-size: 20px; font-weight: 700; color: var(--accent); }
     .sidebar-subtitle { padding: 0 16px 8px; font-size: 11px; color: var(--muted); }
-    .sidebar-search { padding: 8px 12px; }
+    .sidebar-search { padding: 10px 14px; }
     .sidebar-search input {
-      width: 100%; padding: 7px 10px; font-size: 12px; border-radius: 10px;
-      border: 1px solid var(--line); background: var(--bg); cursor: pointer; caret-color: transparent;
+      width: 100%; padding: 9px 12px 9px 34px; font-size: 13px; border-radius: 12px;
+      border: 1.5px solid var(--line); background: var(--bg);
+      cursor: pointer; caret-color: transparent;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: 10px center;
+      transition: all .2s;
     }
-    .sidebar-search input:focus { outline: none; border-color: var(--accent); background: #fff; caret-color: auto; }
+    .sidebar-search input:hover { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
+    .sidebar-search input:focus { outline: none; border-color: var(--accent); background: #fff; caret-color: auto; box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+    .sidebar-search-hint { font-size: 10px; color: var(--muted); padding: 2px 14px 0; text-align: center; }
     .sidebar-nav { flex: 1; overflow-y: auto; padding: 4px 0; }
     .sidebar-nav a {
       display: flex; align-items: center; gap: 8px; padding: 10px 16px;
@@ -1899,7 +1908,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </select>
     </div>
     <div class="sidebar-search">
-      <input type="text" id="quick-search-input" placeholder="搜索..." value="" autocomplete="off" disabled>
+      <input type="text" id="quick-search-input" placeholder="搜索电影、剧集..." value="" autocomplete="off" onfocus="location.href='/discover';this.blur()">
+      <div class="sidebar-search-hint">🎬 TMDB 发现</div>
     </div>
     <div class="sidebar-nav">
       <a href="/"{{if or (eq .Page "home") (eq .Page "")}} class="active"{{end}}>{{index .T "dashboard"}}</a>
@@ -2358,12 +2368,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     </script>
     {{end}}
 
-    <!-- search page -->
+    <!-- aggregator search page -->
     {{if eq .Page "search"}}
     <div class="card panel">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
         <h2 style="margin:0;">{{index .T "indexer_search"}}</h2>
-        <button type="button" onclick="clearSearch()" style="margin:0;padding:4px 12px;font-size:12px;background:var(--accent-2);" title="清除搜索状态">{{index .T "search_refresh"}}</button>
+        <button type="button" onclick="clearSearch()" style="margin:0;padding:4px 12px;font-size:12px;background:var(--accent-2);" title="{{index .T "search_refresh"}}">{{index .T "search_refresh"}}</button>
       </div>
       <form action="/search" method="post" id="search-form" autocomplete="off">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
@@ -2395,12 +2405,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           {{end}}
         </div>
         {{end}}
-        {{if .RssURL}}
-        <div style="margin-top:6px;display:flex;gap:8px;">
-          <button type="button" onclick="toggleSubForm()" style="margin-top:0;padding:4px 12px;font-size:11px;background:var(--accent-2);white-space:nowrap;">{{index .T "subscribe_search"}}</button>
-        </div>
-        {{end}}
       </form>
+      {{if .RssURL}}
+      <div style="margin-top:6px;display:flex;gap:8px;">
+        <button type="button" onclick="toggleSubForm()" style="margin-top:0;padding:4px 12px;font-size:11px;background:var(--accent-2);white-space:nowrap;">{{index .T "subscribe_search"}}</button>
+      </div>
+      {{end}}
       <!-- subscription form (hidden) -->
       {{if .RssURL}}
       <div id="sub-form" style="display:none;margin-top:12px;padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;">
@@ -2420,7 +2430,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         </form>
       </div>
       {{end}}
-      <!-- search results -->
       {{if .SearchResults}}
       <div style="margin-top:16px;">
         <table class="tbl" id="search-results"><thead><tr><th>#</th><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "date_label"}}</th><th>{{index .T "indexer_label"}}</th><th></th></tr></thead><tbody>
@@ -2431,7 +2440,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <td>{{if $r.MagnetURL}}<button data-magnet="{{$r.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
         </tr>{{end}}</tbody></table>
       </div>
-      <!-- pagination bar -->
       <div id="pagination-bar" style="display:flex;justify-content:center;align-items:center;gap:4px;margin-top:14px;flex-wrap:wrap;"></div>
       {{else}}{{if .SearchQuery}}<div class="hint" style="margin-top:12px;">{{index .T "search_no_result"}}</div>{{end}}{{end}}
       {{if .SearchErrors}}{{range $id, $err := .SearchErrors}}<div style="padding:4px 8px;margin:2px 0;background:#fef2f2;color:#991b1b;border-radius:6px;word-break:break-all;">⚠ {{$err}}</div>{{end}}{{end}}
@@ -2439,41 +2447,293 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       {{if .SavedSearches}}<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);"><h3 style="margin:0 0 8px;">{{index .T "saved_searches_title"}}</h3>{{range .SavedSearches}}<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><span style="flex:1;">🔍 {{.Query}}{{if .Category}} <span style="color:var(--muted);font-size:11px;">[{{.Category}}]</span>{{end}}</span><form action="/search" method="post" style="display:inline;"><input type="hidden" name="q" value="{{.Query}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="sort" value="{{.Sort}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">{{index $.T "search_btn_sm"}}</button></form><form action="/search" method="post" style="display:inline;"><input type="hidden" name="action" value="unsubscribe"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">{{index $.T "delete_btn"}}</button></form></div>{{end}}</div>{{end}}
     </div>
     <script>
-    // Pagination state — must be declared before IIFE below
     var searchTotal={{.SearchTotal}};
     var pageSize={{.PageSize}};
     var currentPage=1;
     var totalPages=1;
-
-    // Calculate initial totalPages
     if(searchTotal>0){totalPages=Math.ceil(searchTotal/pageSize);}
-    else{
-      var rows=document.querySelectorAll('#search-results tbody tr');
-      if(rows.length>0){totalPages=Math.max(1,Math.ceil(rows.length/pageSize));}
-    }
-
-    // Persist search state across page navigations
+    else{var rows=document.querySelectorAll('#search-results tbody tr');if(rows.length>0){totalPages=Math.max(1,Math.ceil(rows.length/pageSize));}}
     (function(){
       var pgKey='pan-fetcher-page';
       {{if .SearchQuery}}
-      // Save query params so we can restore on re-entry
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
       sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
       {{else}}
-      // Restore previous search by re-submitting the query (lightweight, no HTML storage)
       var savedQuery=sessionStorage.getItem('pan-fetcher-query');
       var savedPage=sessionStorage.getItem(pgKey);
       if(savedPage){try{var ps=JSON.parse(savedPage);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;}catch(e){}}
-      if(savedQuery && !{{.SearchQuery}}){
-        var fd=new URLSearchParams(savedQuery);
-        if(fd.get('q')){
-          document.getElementById('search-q').value=fd.get('q');
-          document.getElementById('search-form').submit();
-        }
-      }
+      if(savedQuery&&!{{.SearchQuery}}){var fd=new URLSearchParams(savedQuery);if(fd.get('q')){document.getElementById('search-q').value=fd.get('q');document.getElementById('search-form').submit();}}
       {{end}}
     })();
+    </script>
+    {{end}}
+
+    <!-- discover page (TMDB) -->
+    {{if eq .Page "discover"}}
+    <style>
+      .discover-hero{text-align:center;padding:20px 0 10px;}
+      .discover-hero h2{font-size:22px;margin:0 0 6px;}
+      .discover-hero p{color:var(--muted);font-size:13px;margin:0;}
+      .discover-search{display:flex;gap:8px;max-width:560px;margin:0 auto;}
+      .discover-search input{flex:1;font-size:15px;padding:10px 14px;border-radius:10px;}
+      .discover-search button{padding:10px 24px;font-size:14px;border-radius:10px;margin:0;}
+      .tmdb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;margin-top:16px;}
+      .tmdb-card{cursor:pointer;border-radius:12px;overflow:hidden;background:var(--card);border:1px solid var(--line);transition:all .2s;position:relative;}
+      .tmdb-card:hover{transform:translateY(-4px);box-shadow:0 8px 24px rgba(0,0,0,.12);border-color:var(--accent);}
+      .tmdb-card.selected{border:2px solid var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.25);}
+      .tmdb-poster-wrap{position:relative;aspect-ratio:2/3;overflow:hidden;background:linear-gradient(135deg,#e5e7eb,#d1d5db);}
+      .tmdb-poster{width:100%;height:100%;object-fit:cover;display:block;}
+      .tmdb-poster-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:36px;color:#9ca3af;}
+      .tmdb-card-overlay{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.7));padding:24px 10px 10px;}
+      .tmdb-card-title{font-size:13px;font-weight:600;color:#fff;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 1px 2px rgba(0,0,0,.5);}
+      .tmdb-card-year{font-size:11px;color:rgba(255,255,255,.75);margin-top:2px;}
+      .tmdb-card-type{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);color:#fff;font-size:10px;padding:2px 8px;border-radius:10px;}
+      .search-tabs{display:flex;gap:0;margin:16px 0 0;border-bottom:2px solid var(--line);}
+      .search-tab{padding:10px 24px;cursor:pointer;font-size:14px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s;}
+      .search-tab:hover{color:var(--text);}
+      .search-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+      .season-select{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+      .season-chip{padding:6px 16px;border-radius:22px;font-size:13px;cursor:pointer;border:1px solid var(--line);background:var(--bg);transition:.2s;user-select:none;}
+      .season-chip:hover{border-color:var(--accent);color:var(--accent);}
+      .season-chip.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+      .search-step{display:none;animation:fadeIn .25s ease;}
+      .search-step.active{display:block;}
+      @keyframes fadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+      .confirm-bar{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--bg);border-radius:12px;margin-top:14px;border:1px solid var(--line);}
+      .confirm-bar .sel-title{font-weight:600;font-size:15px;flex:1;display:flex;align-items:center;gap:8px;}
+      .confirm-bar .sel-poster{width:40px;height:56px;border-radius:6px;object-fit:cover;}
+      .back-to-top{position:fixed;bottom:24px;right:24px;width:44px;height:44px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.15);display:none;align-items:center;justify-content:center;font-size:20px;z-index:100;transition:all .2s;}
+      .back-to-top:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.2);}
+      .back-to-top.show{display:flex;}
+    </style>
+    <div class="discover-hero">
+      <h2>🎬 发现</h2>
+      <p>搜索电影和剧集，找到你想要的资源</p>
+    </div>
+    <div class="discover-search">
+      <input type="text" id="tmdb-query" placeholder="输入电影或剧集名称..." autofocus>
+      <button onclick="doTMDBSearch()" style="background:var(--accent);">搜索</button>
+    </div>
+    <div id="tmdb-status" style="text-align:center;margin-top:8px;font-size:12px;color:var(--muted);min-height:20px;"></div>
+
+    <div id="step-tmdb" class="search-step active">
+      <div class="search-tabs" id="tmdb-tabs" style="display:none;">
+        <div class="search-tab active" data-tab="movies" onclick="switchTMDTab('movies')">🎬 电影</div>
+        <div class="search-tab" data-tab="tv" onclick="switchTMDTab('tv')">📺 电视节目</div>
+      </div>
+      <div class="tmdb-grid" id="tmdb-grid"></div>
+    </div>
+
+    <!-- Trending section -->
+    <div id="trending-section" style="margin-top:24px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <h3 style="margin:0;font-size:16px;">🔥 热门推荐</h3>
+        <span style="font-size:11px;color:var(--muted);">本周流行</span>
+      </div>
+      <div class="search-tabs" style="margin-bottom:0;">
+        <div class="search-tab active" data-trending="movies" onclick="switchTrendingTab('movies')">🎬 热门电影</div>
+        <div class="search-tab" data-trending="tv" onclick="switchTrendingTab('tv')">📺 热门剧集</div>
+      </div>
+      <div class="tmdb-grid" id="trending-grid" style="min-height:120px;">
+        <div style="grid-column:1/-1;text-align:center;padding:30px;color:var(--muted);">⏳ 加载中...</div>
+      </div>
+      <div style="text-align:center;margin-top:14px;" id="trending-more-wrap">
+        <button id="btn-trending-more" onclick="loadMoreTrending()" style="padding:8px 28px;font-size:13px;border-radius:20px;background:var(--bg);border:1px solid var(--line);cursor:pointer;display:none;color:var(--accent);">📥 显示更多</button>
+      </div>
+    </div>
+
+    <div id="step-season" class="search-step">
+      <div class="confirm-bar">
+        <span class="sel-title" id="sel-title"></span>
+        <button onclick="backToTMDB()" style="margin:0;padding:6px 14px;font-size:12px;background:#6b7280;border-radius:8px;">← 返回</button>
+      </div>
+      <div style="margin-top:10px;font-size:13px;color:var(--muted);">选择季（可选，不选则搜索全部季）：</div>
+      <div class="season-select" id="season-list"></div>
+      <button id="btn-confirm-tv" onclick="confirmTVSearch()" style="margin-top:14px;padding:10px 24px;font-size:14px;background:var(--accent);border-radius:10px;">🔍 搜索此剧集</button>
+    </div>
+
+    <div id="step-confirm" class="search-step">
+      <div class="confirm-bar">
+        <span class="sel-title" id="confirm-title"></span>
+        <button onclick="backToTMDB()" style="margin:0;padding:6px 14px;font-size:12px;background:#6b7280;border-radius:8px;">← 重新选择</button>
+      </div>
+      <div id="confirm-query" style="margin-top:10px;font-size:13px;color:var(--muted);"></div>
+      <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+        <button onclick="doAggregatedSearch()" style="padding:10px 24px;font-size:14px;background:var(--accent);border-radius:10px;">🚀 聚合搜索</button>
+        <button onclick="doAggregatedSearchRSS()" style="padding:10px 24px;font-size:14px;background:var(--accent-2);border-radius:10px;">📋 一键订阅</button>
+      </div>
+    </div>
+    <script>
+    var tmdbMovies=[],tmdbTV=[];
+    var selectedItem=null, selectedSeason=0;
+
+    document.getElementById('tmdb-query').addEventListener('keydown',function(e){if(e.key==='Enter')doTMDBSearch();});
+
+    async function doTMDBSearch(){
+      var q=document.getElementById('tmdb-query').value.trim();
+      if(!q)return;
+      document.getElementById('tmdb-status').innerHTML='<span style="display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px;"></span>搜索中...';
+      try{
+        var r=await fetch('/api/tmdb/search?q='+encodeURIComponent(q));
+        var j=await r.json();
+        if(j.error){document.getElementById('tmdb-status').textContent='⚠ '+j.error;return;}
+        tmdbMovies=j.movies||[];tmdbTV=j.tv||[];
+        var total=tmdbMovies.length+tmdbTV.length;
+        document.getElementById('tmdb-status').textContent='找到 '+total+' 个结果（电影 '+tmdbMovies.length+'，电视 '+tmdbTV.length+'）';
+        document.getElementById('tmdb-tabs').style.display=tmdbMovies.length&&tmdbTV.length?'flex':(total?'flex':'none');
+        var startTab=tmdbMovies.length?'movies':'tv';
+        document.querySelectorAll('.search-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===startTab);});
+        renderTMDBCards(startTab);
+        showStep('step-tmdb');
+      }catch(e){document.getElementById('tmdb-status').textContent='⚠ 请求失败: '+e.message;}
+    }
+
+    function switchTMDTab(tab){
+      document.querySelectorAll('.search-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===tab);});
+      renderTMDBCards(tab);
+    }
+
+    function renderTMDBCards(tab){
+      var items=tab==='movies'?tmdbMovies:tmdbTV;
+      var grid=document.getElementById('tmdb-grid');
+      if(!items.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);">无结果</div>';return;}
+      grid.innerHTML=items.map(function(it){
+        var posterHTML=it.poster
+          ?'<img class="tmdb-poster" src="'+it.poster+'" alt="'+it.title+'" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=&#34;tmdb-poster-placeholder&#34;>🎬</div>\'">'
+          :'<div class="tmdb-poster-placeholder">'+(it.media_type==='movie'?'🎬':'📺')+'</div>';
+        return '<div class="tmdb-card" onclick="selectTMDB(\''+it.media_type+'\','+it.id+')" data-type="'+it.media_type+'" data-id="'+it.id+'">'
+          +'<div class="tmdb-poster-wrap">'+posterHTML+'<div class="tmdb-card-overlay"><div class="tmdb-card-title">'+it.title+'</div><div class="tmdb-card-year">'+it.year+'</div></div></div>'
+          +'<div class="tmdb-card-type">'+(it.media_type==='movie'?'电影':'剧集')+'</div>'
+          +'</div>';
+      }).join('');
+    }
+
+    function selectTMDB(mediaType,id){
+      var items=mediaType==='movie'?tmdbMovies:tmdbTV;
+      selectedItem=items.find(function(it){return it.media_type===mediaType&&it.id===id;});
+      if(!selectedItem)return;
+      document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.toggle('selected',c.getAttribute('data-id')==String(id));});
+      if(mediaType==='movie'){
+        showStep('step-confirm');
+        document.getElementById('confirm-title').innerHTML='<img class="sel-poster" src="'+selectedItem.poster+'" onerror="this.style.display=\'none\'">🎬 '+selectedItem.title+' <span style="color:var(--muted);font-weight:400;">('+selectedItem.year+')</span>';
+        document.getElementById('confirm-query').textContent='将搜索: '+selectedItem.title;
+      }else{
+        showStep('step-season');
+        document.getElementById('sel-title').innerHTML='<img class="sel-poster" src="'+selectedItem.poster+'" onerror="this.style.display=\'none\'">📺 '+selectedItem.title+' <span style="color:var(--muted);font-weight:400;">('+selectedItem.year+')</span>';
+        fetchTVSeasons(id);
+      }
+    }
+
+    async function fetchTVSeasons(tmdbId){
+      document.getElementById('season-list').innerHTML='<span style="font-size:12px;color:var(--muted);">加载季信息...</span>';
+      var html='<span class="season-chip active" onclick="selectSeason(0,this)">全部</span>';
+      for(var s=1;s<=12;s++){html+='<span class="season-chip" onclick="selectSeason('+s+',this)">第 '+s+' 季</span>';}
+      document.getElementById('season-list').innerHTML=html;
+      selectedSeason=0;
+    }
+
+    function selectSeason(season,el){selectedSeason=season;document.querySelectorAll('#season-list .season-chip').forEach(function(c){c.classList.remove('active');});el.classList.add('active');}
+
+    function confirmTVSearch(){
+      var label=selectedItem.title;
+      if(selectedSeason>0)label+=' S'+String(selectedSeason).padStart(2,'0');
+      document.getElementById('confirm-title').innerHTML='<img class="sel-poster" src="'+selectedItem.poster+'" onerror="this.style.display=\'none\'">📺 '+label+' <span style="color:var(--muted);font-weight:400;">('+selectedItem.year+')</span>';
+      document.getElementById('confirm-query').textContent='将搜索: '+label;
+      showStep('step-confirm');
+    }
+
+    function backToTMDB(){showStep('step-tmdb');selectedItem=null;selectedSeason=0;document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.remove('selected');});}
+    function showStep(id){document.querySelectorAll('.search-step').forEach(function(s){s.classList.remove('active');});var el=document.getElementById(id);if(el)el.classList.add('active');}
+
+    function doAggregatedSearch(){
+      var query=selectedItem?selectedItem.title:document.getElementById('tmdb-query').value.trim();
+      if(selectedItem&&selectedItem.media_type==='tv'&&selectedSeason>0)query+=' S'+String(selectedSeason).padStart(2,'0');
+      var form=document.createElement('form');form.method='POST';form.action='/search';
+      var input=document.createElement('input');input.type='hidden';input.name='q';input.value=query;form.appendChild(input);
+      if(selectedItem){var cat=document.createElement('input');cat.type='hidden';cat.name='category';cat.value=selectedItem.media_type==='movie'?'movie':'tv';form.appendChild(cat);}
+      document.body.appendChild(form);form.submit();
+    }
+
+    function doAggregatedSearchRSS(){
+      var query=selectedItem?selectedItem.title:document.getElementById('tmdb-query').value.trim();
+      if(selectedItem&&selectedItem.media_type==='tv'&&selectedSeason>0)query+=' S'+String(selectedSeason).padStart(2,'0');
+      var form=document.createElement('form');form.method='POST';form.action='/search';
+      var input=document.createElement('input');input.type='hidden';input.name='q';input.value=query;form.appendChild(input);
+      if(selectedItem){var cat=document.createElement('input');cat.type='hidden';cat.name='category';cat.value=selectedItem.media_type==='movie'?'movie':'tv';form.appendChild(cat);}
+      var rss=document.createElement('input');rss.type='hidden';rss.name='subscribe';rss.value='1';form.appendChild(rss);
+      document.body.appendChild(form);form.submit();
+    }
+    // --- Trending ---
+    var trendingMovies=[],trendingTV=[],trendingPage=1,trendingTab='movies';
+    function switchTrendingTab(tab){
+      trendingTab=tab;
+      document.querySelectorAll('[data-trending]').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-trending')===tab);});
+      renderTrendingCards(tab);
+    }
+    function renderTrendingCards(tab){
+      var items=tab==='movies'?trendingMovies:trendingTV;
+      var grid=document.getElementById('trending-grid');
+      if(!items.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:30px;color:var(--muted);">暂无数据</div>';document.getElementById('btn-trending-more').style.display='none';return;}
+      grid.innerHTML=items.map(function(it){
+        var posterHTML=it.poster
+          ?'<img class="tmdb-poster" src="'+it.poster+'" alt="'+it.title+'" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=&#34;tmdb-poster-placeholder&#34;>🎬</div>\'">'
+          :'<div class="tmdb-poster-placeholder">'+(it.media_type==='movie'?'🎬':'📺')+'</div>';
+        return '<div class="tmdb-card" onclick="selectTMDB(\''+it.media_type+'\','+it.id+')" data-type="'+it.media_type+'" data-id="'+it.id+'">'
+          +'<div class="tmdb-poster-wrap">'+posterHTML+'<div class="tmdb-card-overlay"><div class="tmdb-card-title">'+it.title+'</div><div class="tmdb-card-year">'+it.year+'</div></div></div>'
+          +'<div class="tmdb-card-type">'+(it.media_type==='movie'?'电影':'剧集')+'</div>'
+          +'</div>';
+      }).join('');
+      document.getElementById('btn-trending-more').style.display='';
+    }
+    async function loadTrending(){
+      try{var r=await fetch('/api/tmdb/trending?page=1');var j=await r.json();if(j.error)return;trendingMovies=j.movies||[];trendingTV=j.tv||[];trendingPage=1;renderTrendingCards(trendingTab);}catch(e){}
+    }
+    async function loadMoreTrending(){
+      var btn=document.getElementById('btn-trending-more');
+      btn.textContent='⏳ 加载中...';btn.disabled=true;
+      trendingPage++;
+      try{
+        var r=await fetch('/api/tmdb/trending?page='+trendingPage);
+        var j=await r.json();
+        if(j.error){btn.textContent='📥 显示更多';btn.disabled=false;return;}
+        var newMovies=j.movies||[],newTV=j.tv||[];
+        if(!newMovies.length&&!newTV.length){btn.textContent='✓ 已全部加载';btn.disabled=true;return;}
+        // Append only new cards instead of re-rendering all (avoids scroll jump)
+        var grid=document.getElementById('trending-grid');
+        var frag=document.createDocumentFragment();
+        var items=trendingTab==='movies'?newMovies:newTV;
+        items.forEach(function(it){
+          var div=document.createElement('div');div.className='tmdb-card';
+          div.setAttribute('onclick',"selectTMDB('"+it.media_type+"',"+it.id+")");
+          div.setAttribute('data-type',it.media_type);div.setAttribute('data-id',it.id);
+          var posterHTML=it.poster
+            ?'<img class="tmdb-poster" src="'+it.poster+'" alt="'+it.title+'" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=&#34;tmdb-poster-placeholder&#34;>🎬</div>\'">'
+            :'<div class="tmdb-poster-placeholder">'+(it.media_type==='movie'?'🎬':'📺')+'</div>';
+          div.innerHTML='<div class="tmdb-poster-wrap">'+posterHTML+'<div class="tmdb-card-overlay"><div class="tmdb-card-title">'+it.title+'</div><div class="tmdb-card-year">'+it.year+'</div></div></div><div class="tmdb-card-type">'+(it.media_type==='movie'?'电影':'剧集')+'</div>';
+          frag.appendChild(div);
+        });
+        grid.appendChild(frag);
+        trendingMovies=trendingMovies.concat(newMovies);
+        trendingTV=trendingTV.concat(newTV);
+        btn.textContent='📥 显示更多';btn.disabled=false;
+      }catch(e){btn.textContent='📥 显示更多';btn.disabled=false;}
+    }
+    loadTrending();
+    // Infinite scroll: load more when button is near viewport bottom
+    var trendingObserver=new IntersectionObserver(function(entries){
+      if(entries[0].isIntersecting){loadMoreTrending();}
+    },{rootMargin:'200px'});
+    var observeBtn=function(){var b=document.getElementById('btn-trending-more');if(b&&b.style.display!=='none')trendingObserver.observe(b);};
+    // Re-observe after each render
+    var origRenderTrending=renderTrendingCards;
+    renderTrendingCards=function(tab){origRenderTrending(tab);setTimeout(observeBtn,100);};
+    // Back to top
+    var backBtn=document.createElement('button');
+    backBtn.className='back-to-top';backBtn.innerHTML='↑';backBtn.title='回到顶部';
+    backBtn.onclick=function(){window.scrollTo({top:0,behavior:'smooth'});};
+    document.body.appendChild(backBtn);
+    window.addEventListener('scroll',function(){backBtn.classList.toggle('show',window.scrollY>400);});
     </script>
     {{end}}
 
@@ -3268,6 +3528,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           </div>
         </fieldset>
 
+        <!-- Group: TMDB -->
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;">
+          <legend style="font-weight:600;font-size:14px;padding:0 8px;">🎬 TMDB API</legend>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div style="flex:2;min-width:260px;">
+              <label>TMDB API Key <small style="color:var(--muted);">(<a href="https://www.themoviedb.org/settings/api" target="_blank">获取 Key</a>)</small></label>
+              <input name="tmdb_apikey" placeholder="输入 TMDB API Key 以启用海报搜索" value="{{.TMDBAPIKey}}">
+            </div>
+          </div>
+        </fieldset>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);">
           <button type="submit" style="margin-top:0;">{{index .T "save"}}</button>
           <button type="button" onclick="restartServer()" style="margin-top:0;background:var(--danger);">{{index .T "restart_service_btn"}}</button>
@@ -3335,7 +3606,13 @@ func New(agent *p115pkg.Agent, port int) *Server {
 	// Apply proxy to Jackett client (same as engine)
 	cfg, _, _ := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
 	if cfg.Proxy.HTTP != "" {
+		s.ProxyHTTP = cfg.Proxy.HTTP
 		jackett.SetProxy(cfg.Proxy.HTTP)
+		media.SetTMDBProxy(cfg.Proxy.HTTP)
+	}
+	// Init TMDB client (after proxy is configured)
+	if ws.TMDBAPIKey != "" {
+		media.InitTMDB(ws.TMDBAPIKey)
 	}
 	// Warm Jackett cache in background
 	s.ensureDefaultIndexers()
@@ -3376,6 +3653,7 @@ func (s *Server) LoadProxyConfig() {
 	cfg, _, err := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
 	if err == nil && cfg.Proxy.HTTP != "" {
 		s.ProxyHTTP = cfg.Proxy.HTTP
+		media.SetTMDBProxy(cfg.Proxy.HTTP)
 	}
 }
 
@@ -3800,6 +4078,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/settings/update", s.authCheck(s.handleDoUpdate))
 	mux.HandleFunc("/search", s.authCheck(s.handleSearch))
 	mux.HandleFunc("/search/more", s.authCheck(s.handleSearchMore))
+	mux.HandleFunc("/discover", s.authCheck(s.handleDiscover))
 	mux.HandleFunc("/indexers", s.authCheck(s.handleIndexers))
 	mux.HandleFunc("/indexers/test", s.authCheck(s.handleIndexerTest))
 	mux.HandleFunc("/indexers/testall", s.authCheck(s.handleIndexerTestAll))
@@ -3821,6 +4100,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/about", s.authCheck(s.handleAbout))
 	mux.HandleFunc("/api/tasks", s.authCheck(s.handleAPITasks))
 	mux.HandleFunc("/api/logs", s.authCheck(s.handleAPILogs))
+	mux.HandleFunc("/api/tmdb/search", s.authCheck(s.handleTMDBSearch))
+	mux.HandleFunc("/api/tmdb/trending", s.authCheck(s.handleTMDBTrending))
 	mux.HandleFunc("/api/notify/test", s.authCheck(s.handleNotifyTest))
 	mux.HandleFunc("/api/lang", s.authCheck(s.handleAPILang))
 }
@@ -4488,6 +4769,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			s.JackettAdminPassword = v
 			changes = append(changes, "jackett_admin_password=***")
 		}
+		// TMDB
+		if v := strings.TrimSpace(r.FormValue("tmdb_apikey")); v != ws.TMDBAPIKey {
+			ws.TMDBAPIKey = v
+			media.InitTMDB(v)
+			media.SetTMDBProxy(s.ProxyHTTP)
+			changes = append(changes, "tmdb_apikey=***")
+		}
 		// Page size
 		if v, err := strconv.Atoi(r.FormValue("page_size")); err == nil && v >= 10 && v <= 500 && v != ws.PageSize {
 			ws.PageSize = v
@@ -4790,6 +5078,85 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "missing query"})
+		return
+	}
+	if media.DefaultTMDB == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "TMDB not configured"})
+		return
+	}
+	movies, tvShows, err := media.DefaultTMDB.SearchAll(q)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	// Build response with poster URLs
+	type result struct {
+		TMDBID    int    `json:"id"`
+		Title     string `json:"title"`
+		Year      string `json:"year"`
+		MediaType string `json:"media_type"`
+		Poster    string `json:"poster"`
+		Overview  string `json:"overview"`
+	}
+	moviesOut := make([]result, 0, len(movies))
+	for _, m := range movies {
+		moviesOut = append(moviesOut, result{
+			TMDBID: m.TMDBID, Title: m.DisplayName(), Year: m.YearStr(),
+			MediaType: "movie", Poster: m.PosterURL(), Overview: m.Overview,
+		})
+	}
+	tvOut := make([]result, 0, len(tvShows))
+	for _, t := range tvShows {
+		tvOut = append(tvOut, result{
+			TMDBID: t.TMDBID, Title: t.DisplayName(), Year: t.YearStr(),
+			MediaType: "tv", Poster: t.PosterURL(), Overview: t.Overview,
+		})
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"movies": moviesOut,
+		"tv":     tvOut,
+	})
+}
+
+func (s *Server) handleTMDBTrending(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if media.DefaultTMDB == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "TMDB not configured"})
+		return
+	}
+	page := 1
+	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && p > 0 {
+		page = p
+	}
+	movies, tvShows, err := media.DefaultTMDB.TrendingPage(page)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	type result struct {
+		TMDBID    int    `json:"id"`
+		Title     string `json:"title"`
+		Year      string `json:"year"`
+		MediaType string `json:"media_type"`
+		Poster    string `json:"poster"`
+		Overview  string `json:"overview"`
+	}
+	moviesOut := make([]result, 0, len(movies))
+	for _, m := range movies {
+		moviesOut = append(moviesOut, result{TMDBID: m.TMDBID, Title: m.DisplayName(), Year: m.YearStr(), MediaType: "movie", Poster: m.PosterURL(), Overview: m.Overview})
+	}
+	tvOut := make([]result, 0, len(tvShows))
+	for _, t := range tvShows {
+		tvOut = append(tvOut, result{TMDBID: t.TMDBID, Title: t.DisplayName(), Year: t.YearStr(), MediaType: "tv", Poster: t.PosterURL(), Overview: t.Overview})
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"movies": moviesOut, "tv": tvOut})
 }
 
 func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {
@@ -5277,6 +5644,12 @@ func doRestart() {
 }
 
 // ---------- search ----------
+
+func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	data := s.pageData("", "")
+	data.Page = "discover"
+	dashboardTemplate.Execute(w, data)
+}
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")

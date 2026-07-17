@@ -26,9 +26,18 @@ type TMDBResult struct {
 	Year       string   `json:"release_date"`
 	FirstAir   string   `json:"first_air_date"`
 	Overview   string   `json:"overview"`
+	PosterPath string   `json:"poster_path"`
 	AltTitles  []string `json:"-"` // populated from alternative_titles
 	Seasons    []TMDBSeason `json:"seasons,omitempty"`
 	Genres     []TMDBGenre  `json:"genres,omitempty"`
+}
+
+// PosterURL returns the full poster image URL (w200 size).
+func (r *TMDBResult) PosterURL() string {
+	if r.PosterPath == "" {
+		return ""
+	}
+	return "https://image.tmdb.org/t/p/w200" + r.PosterPath
 }
 
 // DisplayName returns the best display name.
@@ -77,9 +86,28 @@ type tmdbSearchResp struct {
 
 // NewTMDBClient creates a new TMDB API client.
 func NewTMDBClient(apiKey string) *TMDBClient {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+	}
+	if tmdbProxyURL != "" {
+		if u, err := url.Parse(tmdbProxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	}
 	return &TMDBClient{
 		apiKey: apiKey,
-		http:   &http.Client{Timeout: 10 * time.Second},
+		http:   &http.Client{Timeout: 10 * time.Second, Transport: transport},
+	}
+}
+
+var tmdbProxyURL string
+
+// SetTMDBProxy sets the HTTP proxy for TMDB API calls.
+func SetTMDBProxy(proxyURL string) {
+	tmdbProxyURL = proxyURL
+	// Re-init default client if already created
+	if DefaultTMDB != nil {
+		DefaultTMDB = NewTMDBClient(DefaultTMDB.apiKey)
 	}
 }
 
@@ -202,6 +230,103 @@ func InitTMDB(apiKey string) {
 	if apiKey != "" {
 		DefaultTMDB = NewTMDBClient(apiKey)
 	}
+}
+
+// SearchAll searches both movies and TV shows from TMDB, returning top results.
+func (c *TMDBClient) SearchAll(query string) (movies, tvShows []TMDBResult, err error) {
+	if c == nil || c.apiKey == "" {
+		return nil, nil, fmt.Errorf("TMDB API key not configured")
+	}
+	// Search movies
+	params := url.Values{}
+	params.Set("api_key", c.apiKey)
+	params.Set("query", query)
+	params.Set("language", "zh-CN")
+
+	movieURL := "https://api.themoviedb.org/3/search/movie?" + params.Encode()
+	resp, err := c.http.Get(movieURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	var mr tmdbSearchResp
+	json.NewDecoder(resp.Body).Decode(&mr)
+	resp.Body.Close()
+	for i := range mr.Results {
+		mr.Results[i].MediaType = "movie"
+	}
+	movies = mr.Results
+	if len(movies) > 8 {
+		movies = movies[:8]
+	}
+
+	// Search TV
+	tvURL := "https://api.themoviedb.org/3/search/tv?" + params.Encode()
+	resp, err = c.http.Get(tvURL)
+	if err != nil {
+		return movies, nil, nil // movies still ok
+	}
+	var tr tmdbSearchResp
+	json.NewDecoder(resp.Body).Decode(&tr)
+	resp.Body.Close()
+	for i := range tr.Results {
+		tr.Results[i].MediaType = "tv"
+	}
+	tvShows = tr.Results
+	if len(tvShows) > 8 {
+		tvShows = tvShows[:8]
+	}
+	return movies, tvShows, nil
+}
+
+// Trending returns trending movies and TV shows for the week.
+func (c *TMDBClient) Trending() (movies, tvShows []TMDBResult, err error) {
+	return c.TrendingPage(1)
+}
+
+// TrendingPage returns trending movies and TV shows with pagination.
+func (c *TMDBClient) TrendingPage(page int) (movies, tvShows []TMDBResult, err error) {
+	if c == nil || c.apiKey == "" {
+		return nil, nil, fmt.Errorf("TMDB API key not configured")
+	}
+	params := url.Values{}
+	params.Set("api_key", c.apiKey)
+	params.Set("language", "zh-CN")
+	params.Set("page", fmt.Sprintf("%d", page))
+
+	// Trending movies
+	movieURL := "https://api.themoviedb.org/3/trending/movie/week?" + params.Encode()
+	resp, err := c.http.Get(movieURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	var mr tmdbSearchResp
+	json.NewDecoder(resp.Body).Decode(&mr)
+	resp.Body.Close()
+	for i := range mr.Results {
+		mr.Results[i].MediaType = "movie"
+	}
+	movies = mr.Results
+	if len(movies) > 8 {
+		movies = movies[:8]
+	}
+
+	// Trending TV
+	tvURL := "https://api.themoviedb.org/3/trending/tv/week?" + params.Encode()
+	resp, err = c.http.Get(tvURL)
+	if err != nil {
+		return movies, nil, nil
+	}
+	var tr tmdbSearchResp
+	json.NewDecoder(resp.Body).Decode(&tr)
+	resp.Body.Close()
+	for i := range tr.Results {
+		tr.Results[i].MediaType = "tv"
+	}
+	tvShows = tr.Results
+	if len(tvShows) > 8 {
+		tvShows = tvShows[:8]
+	}
+	return movies, tvShows, nil
 }
 
 func (c *TMDBClient) BestMatch(rawTitle string, mediaType string) *TMDBResult {
