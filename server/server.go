@@ -203,7 +203,7 @@ type dedupEntry struct {
 var srv *http.Server
 
 // Version is set via ldflags at build time: -X server.Version=v0.x.x
-var Version = "dev"
+var Version = "1.0.3"
 
 var rssJsonPath = "rss.json"
 
