@@ -22,25 +22,25 @@
 
 4 个内置 BT 索引器（ACG.RIP · 动漫花园 · Mikan · Nyaa.si），Cardigann YAML 兼容可自行扩展。集成 **Jackett / Prowlarr**，一键激活其管理的数百个索引器。分类筛选 · 关键词实时过滤 · 分页浏览（带行序号） · 一键订阅。搜索结果自动去重（InfoHash / Magnet / Title+Size 三级），翻页无重复。
 
-<p align="center"><img src=".github/images/1747.jpg" alt="资源搜索" width="70%"></p>
+<p align="center"><img src=".github/images/1738.jpg" alt="资源搜索" width="70%"></p>
 
 ### 📡 Jackett / Prowlarr 集成
 
 自动发现 Jackett 实例中的所有索引器，批量激活/停用、连接测试。支持 Admin 密码认证（WebUI 登录密码）。搜索结果标注来源（本地 / Jackett），可独立选择参与搜索的索引器。从 Jackett 库一键添加公开索引器、删除已配置索引器。
 
-<p align="center"><img src=".github/images/1740.jpg" alt="索引器" width="70%"></p>
+<p align="center"><img src=".github/images/1741.jpg" alt="索引器" width="70%"></p>
 
 ### 📋 RSS 订阅
 
 定时抓取 · info hash 去重 · 关键词/正则过滤 · 启用/禁用开关 · 缓存管理。支持 Jackett-only 索引器的 RSS 聚合订阅。
 
-<p align="center"><img src=".github/images/1755.jpg" alt="订阅管理" width="70%"></p>
+<p align="center"><img src=".github/images/1746.jpg" alt="订阅管理" width="70%"></p>
 
 ### 📥 离线下载
 
 磁力 / ed2k / http 批量提交 · 下载中 / 失败 / 已完成分页 · 任务清理。
 
-<p align="center"><img src=".github/images/1738.jpg" alt="离线下载" width="70%"></p>
+<p align="center"><img src=".github/images/1740.jpg" alt="离线下载" width="70%"></p>
 
 ### 📂 文件管理
 
@@ -52,19 +52,19 @@
 
 推送统计 · 订阅活跃度 · 索引器数量（含 Jackett 激活数） · 缓存条目 · 运行时长 · 连接状态 · 最近新增资源。
 
-<p align="center"><img src=".github/images/1741.jpg" alt="仪表盘" width="70%"></p>
+<p align="center"><img src=".github/images/1760.jpg" alt="仪表盘" width="70%"></p>
 
 ### 🔔 通知推送
 
 企业微信 Webhook · 任务完成/RSS 新资源/运行日志 独立推送开关 · 一键测试 · 实时日志流。
 
-<p align="center"><img src=".github/images/1760.jpg" alt="运行日志" width="70%"></p>
+<p align="center"><img src=".github/images/1747.jpg" alt="运行日志" width="70%"></p>
 
 ### ⚙️ 部署友好
 
 Docker 一键部署 · Linux systemd 安装脚本 · 5 平台预编译二进制。
 
-<p align="center"><img src=".github/images/1746.jpg" alt="设置" width="70%"></p>
+<p align="center"><img src=".github/images/1755.jpg" alt="设置" width="70%"></p>
 
 ## � 与 115 网盘的交互
 
