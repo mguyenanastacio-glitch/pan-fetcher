@@ -4007,15 +4007,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data.HasAgent = s.Agent != nil
 	data.HasPassword = webPassword != ""
 
-	// Compute dashboard stats — use cached task count
+	// Dashboard stats: only compute cheap in-memory counters.
+	// Heavy API calls (ListTasks, readRssFeeds from disk) are skipped;
+	// the dashboard is informational, not real-time.
 	if s.Agent != nil {
-		if time.Since(s.taskCountCacheAt) > 30*time.Second {
-			if tasks, err := s.Agent.ListTasks(); err == nil {
-				s.taskCountCache = len(tasks)
-				s.taskCountCacheAt = time.Now()
-			}
-		}
-		data.DashStats.TotalTasks = s.taskCountCache
+		data.DashStats.TotalTasks = s.taskCountCache // updated by handleAPITasks
 	}
 
 	feeds := s.readRssFeeds()
@@ -4030,15 +4026,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	if s.IdxMgr != nil {
 		data.DashStats.ActiveIndexers = s.IdxMgr.ActiveCount()
-		// Count Jackett-activated indexers
 		s.jackettActiveMu.Lock()
 		s.loadJackettEnabled()
 		data.DashStats.ActiveIndexers += len(s.jackettActive)
 		s.jackettActiveMu.Unlock()
 	}
 
-	data.DashStats.CacheEntries = globalDedup.TotalCount()
-
+	// Skip dedup walk — would iterate thousands of entries for a single stat.
 	data.DashStats.Uptime = formatDuration(time.Since(s.startTime))
 	data.DashStats.RecentItems = notify.GetRecentItems()
 
@@ -4746,6 +4740,7 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 		tasks, err := s.Agent.ListTasks()
 		if err == nil {
 			resp.Count = len(tasks)
+			s.taskCountCache = len(tasks) // keep dashboard in sync
 			for _, t := range tasks {
 				row := apiTask{
 					InfoHash: t.InfoHash,
