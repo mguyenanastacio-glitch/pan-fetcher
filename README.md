@@ -58,7 +58,7 @@
 
 企业微信 Webhook 集成，支持多类型推送开关，实时日志流。
 
-<p align="center"><img src=".github/images/1747.jpg" alt="运行日志" width="70%"></p>
+<p align="center"><img src=".github/images/1747.jpg" alt="运行日志" width="48%">&nbsp;<img src=".github/images/1000006373.jpg" alt="企业微信通知" width="48%"></p>
 
 ### ⚙️ 部署友好
 
