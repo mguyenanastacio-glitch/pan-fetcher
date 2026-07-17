@@ -1020,6 +1020,7 @@ var translations = map[string]map[string]string{
 		"qrcode_scanning": "等待扫码...",
 		"qrcode_ok":       "登录成功！刷新页面生效",
 		"qrcode_error":    "二维码获取失败",
+		"qrcode_timeout":  "二维码已过期，请重新获取",
 		"conn_ok":         "115 连接正常",
 		"login_title":     "🔐 pan-fetcher",
 		"login_pw_ph":     "输入管理密码",
@@ -1354,6 +1355,7 @@ var translations = map[string]map[string]string{
 		"qrcode_scanning": "Waiting for scan...",
 		"qrcode_ok":       "Login OK! Refresh page to apply.",
 		"qrcode_error":    "QR code failed",
+		"qrcode_timeout":  "QR expired, please retry",
 		"conn_ok":         "115 connection OK",
 		"login_title":     "🔐 pan-fetcher",
 		"login_pw_ph":     "Enter password",
@@ -1861,14 +1863,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
   </script>
 </head>
 <body>
-  <!-- global modal (must be outside all page blocks) -->
-  <div id="g-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999;align-items:center;justify-content:center;" onclick="if(event.target===this)closeModal()">
-    <div style="background:#fff;border-radius:12px;padding:20px;min-width:300px;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.15);" onclick="event.stopPropagation()">
-      <div id="g-modal-title" style="font-weight:600;margin-bottom:12px;"></div>
-      <div id="g-modal-body"></div>
-      <div id="g-modal-btns" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;"></div>
-    </div>
-  </div>
   <!-- left sidebar -->
   <div class="sidebar collapsed" id="sidebar">
     <div class="sidebar-logo" style="display:flex;align-items:center;justify-content:space-between;">
@@ -2593,7 +2587,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var form2=document.getElementById('search-form');
           var fd2=new URLSearchParams(new FormData(form2));
           if(fd2.get('q')) sessionStorage.setItem('pan-fetcher-query',fd2.toString());
-          document.getElementById('search-results').scrollIntoView({behavior:'smooth',block:'start'});
+          document.getElementById('search-results').scrollIntoView({block:'start'});
         }catch(e){console.error(e);renderPagination();}
       }
 
@@ -3056,7 +3050,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
                 if(d.qrcode){
                   document.getElementById('qr-img').src=d.qrcode;
                   document.getElementById('qr-img').style.display='inline';
+                  let polls=0;
                   let poll=setInterval(async()=>{
+                    polls++;
+                    if(polls>150){clearInterval(poll);document.getElementById('qr-status').textContent='{{index .T "qrcode_timeout"}}';btn.disabled=false;btn.textContent='{{index .T "qr_login"}}';return;}
                     let s=await fetch('/login/qrcode?poll=1');
                     let j=await s.json();
                     if(j.status==='ok'){document.getElementById('qr-status').textContent='{{index .T "qrcode_ok"}}';clearInterval(poll);btn.disabled=false;btn.textContent='{{index .T "qr_login"}}';}
