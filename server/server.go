@@ -203,7 +203,7 @@ type dedupEntry struct {
 var srv *http.Server
 
 // Version is set via ldflags at build time: -X server.Version=v0.x.x
-var Version = "1.0.3"
+var Version = "1.0.4"
 
 var rssJsonPath = "rss.json"
 
@@ -1959,10 +1959,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <h3 style="margin:0 0 10px;">🆕 最近新增资源</h3>
       <div style="max-height:300px;overflow-y:auto;">
         {{range .DashStats.RecentItems}}
-        <div style="padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:8px;">
-          <span style="color:var(--muted);font-size:11px;white-space:nowrap;">{{.Time}}</span>
-          <span style="color:var(--muted);font-size:11px;white-space:nowrap;">[{{.Sub}}]</span>
-          <span style="flex:1;word-break:break-all;" title="{{.Name}}">{{.Name}}</span>
+        <div style="padding:6px 0;border-bottom:1px solid var(--line);">
+          <div style="font-size:13px;word-break:break-all;line-height:1.5;" title="{{.Name}}">{{.Name}}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">
+            <span>{{.Time}}</span>
+            <span style="margin-left:6px;">[{{.Sub}}]</span>
+          </div>
         </div>
         {{end}}
       </div>
@@ -2217,7 +2219,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           }catch(e){alertModal(e.message);}
         }
       </script>
-      {{if .Agent}}<div style="margin-top:10px;">
+      {{if .HasAgent}}<div style="margin-top:10px;">
         <form action="/subs/run" method="post">
           <input name="rss_url" placeholder="{{index .T "sub_rss_ph"}}" style="width:auto;min-width:300px;display:inline;">
           <button type="submit" style="margin-top:0;">{{index .T "sub_run"}}</button>
@@ -2247,21 +2249,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         </select>
         <button type="submit" style="margin-top:0;padding:6px 12px;font-size:13px;">{{index .T "execute"}}</button>
       </form>
-      {{if .Tasks}}
       <table class="tbl" id="task-table">
         <thead><tr><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th style="width:60px;">%</th><th style="width:40px;"></th></tr></thead>
         <tbody>
-        {{range .Tasks}}<tr class="{{.RowClass}}" data-status="{{.Status}}" data-url="{{.URL}}">
+        {{if .Tasks}}{{range .Tasks}}<tr class="{{.RowClass}}" data-status="{{.Status}}" data-url="{{.URL}}">
           <td title="{{.InfoHash}}">{{.Name}}</td>
           <td>{{.Size}}</td>
           <td>{{printf "%.0f" .Percent}}%</td>
           <td><button onclick="copyTaskURL('{{.URL}}')" style="padding:2px 6px;font-size:10px;margin:0;" title="{{index $.T "copy_link_title"}}">📋</button></td>
-        </tr>{{end}}
+        </tr>{{end}}{{else}}<tr><td colspan="4" class="hint" id="task-empty-hint">{{index .T "no_tasks"}}</td></tr>{{end}}
         </tbody>
       </table>
-      {{else}}
-      <div class="hint">{{index .T "no_tasks"}}</div>
-      {{end}}
     </div>
     <script>
       function switchTaskTab(tab){
@@ -2287,16 +2285,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           alertModal('URL: '+url);
         });
       }
-      // init
-      (function(){
-        var rows=document.querySelectorAll('#task-table tbody tr');
-        var c={downloading:0,failed:0,done:0};
-        rows.forEach(function(r){c[r.getAttribute('data-status')]=(c[r.getAttribute('data-status')]||0)+1;});
-        document.getElementById('cnt-downloading').textContent='('+c.downloading+')';
-        document.getElementById('cnt-failed').textContent='('+c.failed+')';
-        document.getElementById('cnt-done').textContent='('+c.done+')';
-        switchTaskTab('downloading');
-      })();
+      // init — load tasks immediately
+      refreshTasks();
       // Auto-refresh tasks every 30s
       var taskRefreshTimer=setInterval(refreshTasks,30000);
       async function refreshTasks(){
@@ -2304,7 +2294,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var r=await fetch('/api/tasks');
           var j=await r.json();
           var tbody=document.querySelector('#task-table tbody');
-          if(!tbody||!j.tasks)return;
+          if(!tbody)return;
+          // Update total count in heading
+          var h2=document.querySelector('h2');
+          if(h2&&j.count!==undefined){
+            var txt=h2.childNodes[0];
+            if(txt)txt.textContent='{{index .T "offline_tasks"}} ('+j.count+') ';
+          }
+          if(!j.tasks||j.tasks.length===0){
+            tbody.innerHTML='<tr><td colspan="4" class="hint">{{index .T "no_tasks"}}</td></tr>';
+            ['downloading','failed','done'].forEach(function(s){document.getElementById('cnt-'+s).textContent='(0)';});
+            return;
+          }
           tbody.innerHTML=j.tasks.map(function(t){
             return '<tr class="'+t.row_class+'" data-status="'+t.status+'" data-url="'+t.url+'">'+
               '<td title="'+t.info_hash+'">'+t.name+'</td>'+
@@ -4067,7 +4068,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	data := s.pageData("", "")
+	data := s.pageDataWithCache("tasks", "", "")
 	data.Page = "tasks"
 	data.HasAgent = s.Agent != nil
 	if err := dashboardTemplate.Execute(w, data); err != nil {
@@ -6395,7 +6396,9 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 	data.Page = "subs"
 	// Load RSS subscriptions from rss.json
 	data.RssSubs = s.loadRssSubs()
-	dashboardTemplate.Execute(w, data)
+	if err := dashboardTemplate.Execute(w, data); err != nil {
+		log.Printf("[subs] template render error: %v", err)
+	}
 }
 
 func (s *Server) handleSubsAction(w http.ResponseWriter, r *http.Request) {
