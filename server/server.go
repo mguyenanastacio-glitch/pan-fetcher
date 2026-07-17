@@ -2410,8 +2410,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         // Restore pagination state
         var pgState=sessionStorage.getItem(pgKey);
         if(pgState){try{var ps=JSON.parse(pgState);currentPage=ps.currentPage||1;totalPages=ps.totalPages||1;searchTotal=ps.searchTotal||0;pageSize=ps.pageSize||50;}catch(e){}}
-        // Re-render pagination bar
-        renderPagination();
+        // Re-render pagination bar (deferred until shared scripts load)
+        setTimeout(function(){if(typeof renderPagination==='function')renderPagination();},0);
       }
       {{end}}
       // Apply keyword filter on load (deferred for script load order)
