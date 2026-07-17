@@ -229,19 +229,22 @@ var dedupCachePath = "dedup-cache.json"
 // { "_torrent_urls": {"https://...": "hash"}, "_hash_names": {"hash": "name"}, "subKey1": {"hash1":true,...}, ... }
 
 const torrentURLsKey = "_torrent_urls"
+const torrentErrorsKey = "_torrent_errors"
 const hashNamesKey = "_hash_names"
 
 type dedupCache struct {
-	mu          sync.Mutex
-	subs        map[string]map[string]bool // subKey -> infoHash -> true
-	torrentURLs map[string]string          // .torrent URL -> info hash
-	hashNames   map[string]string          // infoHash -> display name
+	mu            sync.Mutex
+	subs          map[string]map[string]bool // subKey -> infoHash -> true
+	torrentURLs   map[string]string          // .torrent URL -> info hash
+	torrentErrors map[string]string          // .torrent URL -> last error
+	hashNames     map[string]string          // infoHash -> display name
 }
 
 var globalDedup = &dedupCache{
-	subs:        make(map[string]map[string]bool),
-	torrentURLs: make(map[string]string),
-	hashNames:   make(map[string]string),
+	subs:          make(map[string]map[string]bool),
+	torrentURLs:   make(map[string]string),
+	torrentErrors: make(map[string]string),
+	hashNames:     make(map[string]string),
 }
 
 func (d *dedupCache) Load() {
@@ -261,6 +264,12 @@ func (d *dedupCache) Load() {
 			json.Unmarshal(v, &urls)
 			for url, hash := range urls {
 				d.torrentURLs[url] = hash
+			}
+		} else if k == torrentErrorsKey {
+			var errs map[string]string
+			json.Unmarshal(v, &errs)
+			for url, errMsg := range errs {
+				d.torrentErrors[url] = errMsg
 			}
 		} else if k == hashNamesKey {
 			var names map[string]string
@@ -375,6 +384,21 @@ func (d *dedupCache) SetTorrentHash(url, hash string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.torrentURLs[url] = hash
+	delete(d.torrentErrors, url) // clear any previous error
+	d.saveLocked()
+}
+
+func (d *dedupCache) GetTorrentError(url string) (errMsg string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	errMsg, ok = d.torrentErrors[url]
+	return
+}
+
+func (d *dedupCache) SetTorrentError(url, errMsg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.torrentErrors[url] = errMsg
 	d.saveLocked()
 }
 
@@ -392,12 +416,17 @@ func (d *dedupCache) GetHashName(hash string) string {
 }
 
 func (d *dedupCache) saveLocked() {
-	raw := make(map[string]interface{}, len(d.subs)+2)
+	raw := make(map[string]interface{}, len(d.subs)+3)
 	urls := make(map[string]string, len(d.torrentURLs))
 	for url, hash := range d.torrentURLs {
 		urls[url] = hash
 	}
 	raw[torrentURLsKey] = urls
+	errs := make(map[string]string, len(d.torrentErrors))
+	for url, errMsg := range d.torrentErrors {
+		errs[url] = errMsg
+	}
+	raw[torrentErrorsKey] = errs
 	names := make(map[string]string, len(d.hashNames))
 	for hash, name := range d.hashNames {
 		names[hash] = name
@@ -3604,6 +3633,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Load caches
 	globalDedup.Load()
+	rsssite.SetTorrentHashCache(globalDedup)
 
 	// Start subscription auto-runner
 	go s.autoRunSubscriptions()

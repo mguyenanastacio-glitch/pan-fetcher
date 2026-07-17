@@ -10,22 +10,26 @@ import (
 	"net/http"
 	urlPkg "net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 )
 
-var (
-	torrentCacheMu    sync.RWMutex
-	torrentCache      = make(map[string]torrentCacheEntry) // URL -> cached info hash
-	torrentCacheTTL   = 24 * time.Hour
-)
+// TorrentHashCache caches .torrent URL → info hash mappings.
+// Implementations should be thread-safe and may persist to disk.
+type TorrentHashCache interface {
+	GetTorrentHash(url string) (hash string, ok bool)
+	SetTorrentHash(url, hash string)
+	GetTorrentError(url string) (errMsg string, ok bool)
+	SetTorrentError(url, errMsg string)
+}
 
-type torrentCacheEntry struct {
-	hash      string
-	err       string
-	timestamp time.Time
+// torrentCache is the global cache instance, set by server at startup.
+var torrentCache TorrentHashCache
+
+// SetTorrentHashCache sets the global torrent hash cache.
+func SetTorrentHashCache(c TorrentHashCache) {
+	torrentCache = c
 }
 
 // TaskURLType classifies a task URL into its protocol category.
@@ -110,44 +114,33 @@ func normalizeTorrentURL(taskURL, title string) string {
 
 func torrentURLToMagnet(torrentURL, title string) (string, error) {
 	// Check cache
-	torrentCacheMu.RLock()
-	if entry, ok := torrentCache[torrentURL]; ok {
-		if time.Since(entry.timestamp) < torrentCacheTTL {
-			if entry.err != "" {
-				torrentCacheMu.RUnlock()
-				return "", errors.New(entry.err)
-			}
-			hash := entry.hash
-			torrentCacheMu.RUnlock()
+	if torrentCache != nil {
+		if hash, ok := torrentCache.GetTorrentHash(torrentURL); ok {
 			return buildMagnet(hash, title), nil
 		}
+		if errMsg, ok := torrentCache.GetTorrentError(torrentURL); ok {
+			return "", errors.New(errMsg)
+		}
 	}
-	torrentCacheMu.RUnlock()
 
 	body, err := downloadTorrentFast(torrentURL)
 	if err != nil {
-		cacheTorrentError(torrentURL, err.Error())
+		if torrentCache != nil {
+			torrentCache.SetTorrentError(torrentURL, err.Error())
+		}
 		return "", err
 	}
 	hash, err := torrentInfoHash(body)
 	if err != nil {
-		cacheTorrentError(torrentURL, err.Error())
+		if torrentCache != nil {
+			torrentCache.SetTorrentError(torrentURL, err.Error())
+		}
 		return "", err
 	}
-	cacheTorrentHash(torrentURL, hash)
+	if torrentCache != nil {
+		torrentCache.SetTorrentHash(torrentURL, hash)
+	}
 	return buildMagnet(hash, title), nil
-}
-
-func cacheTorrentHash(url, hash string) {
-	torrentCacheMu.Lock()
-	torrentCache[url] = torrentCacheEntry{hash: hash, timestamp: time.Now()}
-	torrentCacheMu.Unlock()
-}
-
-func cacheTorrentError(url, errMsg string) {
-	torrentCacheMu.Lock()
-	torrentCache[url] = torrentCacheEntry{err: errMsg, timestamp: time.Now()}
-	torrentCacheMu.Unlock()
 }
 
 func buildMagnet(hash, title string) string {
