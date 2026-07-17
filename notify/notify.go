@@ -202,9 +202,6 @@ func TaskSubmitted(count int, cid string, names []string) string {
 	if len(names) > 0 {
 		msg += "\n> **资源**:"
 		for _, n := range names {
-			if len(n) > 80 {
-				n = n[:80] + "…"
-			}
 			msg += "\n> - " + n
 		}
 	}
@@ -225,9 +222,6 @@ func RSSFound(subName string, count int, names []string) string {
 	if len(names) > 0 {
 		msg += "\n> **资源**:"
 		for _, n := range names {
-			if len(n) > 80 {
-				n = n[:80] + "…"
-			}
 			msg += "\n> - " + n
 		}
 	}
