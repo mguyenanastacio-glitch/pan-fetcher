@@ -40,11 +40,11 @@
 
 ### 📊 仪表盘
 
-推送统计 · 订阅活跃度 · 索引器数量（含 Jackett 激活数） · 缓存条目 · 运行时长 · 连接状态 · 最近新增资源列表（持久化 10 条，重启不丢失，完整显示资源名）。
+推送统计 · 订阅活跃度 · 索引器数量（含 Jackett 激活数） · 缓存条目 · 运行时长 · 连接状态 · 最近新增资源。
 
 ### 🔔 通知推送
 
-企业微信 Webhook · 任务完成/RSS 新资源（显示具体资源名）/运行日志 独立推送开关 · 一键测试 · 实时日志流（懒加载）。
+企业微信 Webhook · 任务完成/RSS 新资源/运行日志 独立推送开关 · 一键测试 · 实时日志流。
 
 ### ⚙️ 部署友好
 
@@ -111,7 +111,7 @@ cd pan-fetcher && go build -ldflags="-s -w -X github.com/mguyenanastacio-glitch/
 
 | 页面 | 路由 | 说明 |
 |------|------|------|
-| 仪表盘 | `/` | 统计面板、最近新增资源列表（10 条持久化、完整资源名）、运行时长 |
+| 仪表盘 | `/` | 统计面板、最近新增资源、运行时长 |
 | 离线下载 | `/tasks` | 磁力提交，分页任务列表，清理 |
 | 资源搜索 | `/search` | 跨站聚合搜索、Jackett 集成、分页浏览、一键订阅 |
 | 索引器 | `/indexers` | 本地/Jackett 索引器激活、测试、YAML 编辑 |
@@ -173,7 +173,7 @@ Automated media downloader for 115 cloud storage. Search across BT indexers, sub
 - **📋 RSS Subscriptions** — Auto-fetch, info hash dedup, keyword filter, Jackett-only feed support.
 - **📥 Offline Download** — Magnet/ed2k/http batch submit with status tabs.
 - **📂 File Manager** — Browse, rename, move, copy, delete 115 cloud files.
-- **📊 Dashboard** — Push stats, active subs, indexer count, cache entries, uptime, 10 recent items persisted to disk with full titles.
+- **📊 Dashboard** — Push stats, active subs, indexer count, cache entries, uptime, recent items.
 - **🔔 Notifications** — WeChat Work webhook with per-event toggles & resource names, real-time log streaming.
 - **🐳 Docker** — One-command deploy via `docker-compose`.
 - **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, self-restart, in-app update check.
