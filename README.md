@@ -50,6 +50,19 @@
 
 Docker 一键部署 · Linux systemd 安装脚本 · 5 平台预编译二进制。
 
+## 📸 界面截图
+
+<p align="center">
+  <img src=".github/images/1741.jpg" alt="仪表盘" width="48%">
+  <img src=".github/images/1747.jpg" alt="资源搜索" width="48%">
+  <img src=".github/images/1740.jpg" alt="索引器" width="48%">
+  <img src=".github/images/1755.jpg" alt="订阅管理" width="48%">
+  <img src=".github/images/1738.jpg" alt="离线下载" width="48%">
+  <img src=".github/images/1745.jpg" alt="文件管理" width="48%">
+  <img src=".github/images/1746.jpg" alt="设置" width="48%">
+  <img src=".github/images/1760.jpg" alt="运行日志" width="48%">
+</p>
+
 ## � 与 115 网盘的交互
 
 pan-fetcher 通过 115 官方 API 操作你的网盘，登录方式有两种：
