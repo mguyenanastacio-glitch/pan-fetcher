@@ -10,10 +10,23 @@ import (
 	"net/http"
 	urlPkg "net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mguyenanastacio-glitch/pan-fetcher/config"
 )
+
+var (
+	torrentCacheMu    sync.RWMutex
+	torrentCache      = make(map[string]torrentCacheEntry) // URL -> cached info hash
+	torrentCacheTTL   = 24 * time.Hour
+)
+
+type torrentCacheEntry struct {
+	hash      string
+	err       string
+	timestamp time.Time
+}
 
 // TaskURLType classifies a task URL into its protocol category.
 type TaskURLType int
@@ -70,33 +83,79 @@ func NormalizeTaskURL(taskURL, title string) string {
 		return taskURL // keep full magnet including dn= for display names
 	}
 	if strings.HasSuffix(strings.ToLower(taskURL), ".torrent") {
-		magnet, err := torrentURLToMagnet(taskURL, title)
-		if err != nil {
-			log.Printf("[torrent] download/parse failed for %s: %v, will submit as-is\n", taskURL, err)
-			return taskURL
-		}
-		if magnet != "" {
-			log.Printf("[torrent] converted %s -> %s\n", taskURL, magnet)
-			return magnet
+		return normalizeTorrentURL(taskURL, title)
+	}
+	// Try downloading as torrent for URLs that don't end with .torrent
+	// (e.g. Jackett API download links). Use cache to avoid repeated downloads.
+	if strings.HasPrefix(strings.ToLower(taskURL), "http://") || strings.HasPrefix(strings.ToLower(taskURL), "https://") {
+		if magnet := normalizeTorrentURL(taskURL, title); !strings.HasPrefix(magnet, "http") {
+			return magnet // successfully converted to magnet
 		}
 	}
 	return taskURL
 }
 
+func normalizeTorrentURL(taskURL, title string) string {
+	magnet, err := torrentURLToMagnet(taskURL, title)
+	if err != nil {
+		log.Printf("[torrent] download/parse failed for %s: %v\n", taskURL, err)
+		return taskURL
+	}
+	if magnet != "" {
+		log.Printf("[torrent] converted %s -> %s\n", taskURL, magnet)
+		return magnet
+	}
+	return taskURL
+}
+
 func torrentURLToMagnet(torrentURL, title string) (string, error) {
+	// Check cache
+	torrentCacheMu.RLock()
+	if entry, ok := torrentCache[torrentURL]; ok {
+		if time.Since(entry.timestamp) < torrentCacheTTL {
+			if entry.err != "" {
+				torrentCacheMu.RUnlock()
+				return "", errors.New(entry.err)
+			}
+			hash := entry.hash
+			torrentCacheMu.RUnlock()
+			return buildMagnet(hash, title), nil
+		}
+	}
+	torrentCacheMu.RUnlock()
+
 	body, err := downloadTorrentFast(torrentURL)
 	if err != nil {
+		cacheTorrentError(torrentURL, err.Error())
 		return "", err
 	}
 	hash, err := torrentInfoHash(body)
 	if err != nil {
+		cacheTorrentError(torrentURL, err.Error())
 		return "", err
 	}
-	magnet := fmt.Sprintf("magnet:?xt=urn:btih:%s", hash)
+	cacheTorrentHash(torrentURL, hash)
+	return buildMagnet(hash, title), nil
+}
+
+func cacheTorrentHash(url, hash string) {
+	torrentCacheMu.Lock()
+	torrentCache[url] = torrentCacheEntry{hash: hash, timestamp: time.Now()}
+	torrentCacheMu.Unlock()
+}
+
+func cacheTorrentError(url, errMsg string) {
+	torrentCacheMu.Lock()
+	torrentCache[url] = torrentCacheEntry{err: errMsg, timestamp: time.Now()}
+	torrentCacheMu.Unlock()
+}
+
+func buildMagnet(hash, title string) string {
+	magnet := "magnet:?xt=urn:btih:" + hash
 	if title != "" {
 		magnet += "&dn=" + urlPkg.QueryEscape(title)
 	}
-	return magnet, nil
+	return magnet
 }
 
 // fastHTTPClient returns a lightweight client with proxy support for quick torrent downloads.

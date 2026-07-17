@@ -503,14 +503,29 @@ func extractInfoHashFromMagnet(magnet string) string {
 			return strings.ToLower(magnet)
 		}
 	}
+	// Try URL-decode first (some clients double-encode)
+	if decoded, err := url.QueryUnescape(magnet); err == nil && decoded != magnet {
+		if h := extractInfoHashFromMagnet(decoded); h != "" {
+			return h
+		}
+	}
 	// Strip magnet:? prefix if present
 	m := magnet
-	if strings.HasPrefix(m, "magnet:?") {
+	if strings.HasPrefix(strings.ToLower(m), "magnet:?") {
 		m = m[8:] // len("magnet:?") = 8
 	}
 	for _, part := range strings.Split(m, "&") {
-		if strings.HasPrefix(strings.ToLower(part), "xt=urn:btih:") {
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(lower, "xt=urn:btih:") {
 			return strings.ToLower(strings.TrimPrefix(part, "xt=urn:btih:"))
+		}
+		// Handle URL-encoded separator: xt=urn%3Abtih%3AHASH
+		if strings.HasPrefix(lower, "xt=urn%3abtih%3a") {
+			hash := strings.TrimPrefix(part, "xt=urn%3Abtih%3A")
+			if decoded, err := url.QueryUnescape(hash); err == nil {
+				return strings.ToLower(decoded)
+			}
+			return strings.ToLower(hash)
 		}
 	}
 	return ""
