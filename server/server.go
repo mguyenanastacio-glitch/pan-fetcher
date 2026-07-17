@@ -240,6 +240,7 @@ type dedupCache struct {
 	torrentURLs   map[string]string          // .torrent URL -> info hash
 	torrentErrors map[string]string          // .torrent URL -> last error
 	hashNames     map[string]string          // infoHash -> display name
+	totalEntries  int                        // running counter, O(1)
 }
 
 var globalDedup = &dedupCache{
@@ -298,6 +299,10 @@ func (d *dedupCache) Load() {
 			}
 		}
 	}
+	// Rebuild running counter after loading from disk
+	for _, set := range d.subs {
+		d.totalEntries += len(set)
+	}
 }
 
 func (d *dedupCache) Save() {
@@ -326,6 +331,9 @@ func (d *dedupCache) Add(subKey, magnet string) {
 	if d.subs[subKey] == nil {
 		d.subs[subKey] = make(map[string]bool)
 	}
+	if !d.subs[subKey][h] {
+		d.totalEntries++
+	}
 	d.subs[subKey][h] = true
 	// Store display name from magnet dn= parameter
 	if name := extractNameFromMagnet(magnet); name != "" {
@@ -337,6 +345,9 @@ func (d *dedupCache) Add(subKey, magnet string) {
 func (d *dedupCache) RemoveSub(subKey string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if set := d.subs[subKey]; set != nil {
+		d.totalEntries -= len(set)
+	}
 	delete(d.subs, subKey)
 }
 
@@ -358,15 +369,11 @@ func (d *dedupCache) SubCount(subKey string) int {
 	return len(d.subs[subKey])
 }
 
-// TotalCount returns the total number of cached entries across all subs.
+// TotalCount returns the total number of cached entries across all subs (O(1)).
 func (d *dedupCache) TotalCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	n := 0
-	for _, set := range d.subs {
-		n += len(set)
-	}
-	return n
+	return d.totalEntries
 }
 
 // Hashes returns the list of info hashes for a subKey.
@@ -469,6 +476,9 @@ func (d *dedupCache) saveLocked() {
 func (d *dedupCache) ClearSub(subKey string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if set := d.subs[subKey]; set != nil {
+		d.totalEntries -= len(set)
+	}
 	delete(d.subs, subKey)
 	d.saveLocked()
 	log.Printf("[dedup] cleared subKey=%q (%d remaining)", subKey, len(d.subs))
@@ -486,6 +496,7 @@ func (d *dedupCache) RemoveHash(subKey, hash string) bool {
 		return false
 	}
 	delete(set, hash)
+	d.totalEntries--
 	if len(set) == 0 {
 		delete(d.subs, subKey)
 	}
@@ -3634,6 +3645,15 @@ func (s *Server) Start(ctx context.Context) error {
 	rsssite.SetTorrentHashCache(globalDedup)
 	notify.LoadRecentItems()
 
+	// Populate task count cache asynchronously (don't block startup)
+	go func() {
+		if s.Agent != nil {
+			if tasks, err := s.Agent.ListTasks(); err == nil {
+				s.taskCountCache = len(tasks)
+			}
+		}
+	}()
+
 	// Start subscription auto-runner
 	go s.autoRunSubscriptions()
 
@@ -4033,6 +4053,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Skip dedup walk — would iterate thousands of entries for a single stat.
+	data.DashStats.CacheEntries = globalDedup.TotalCount()
 	data.DashStats.Uptime = formatDuration(time.Since(s.startTime))
 	data.DashStats.RecentItems = notify.GetRecentItems()
 
