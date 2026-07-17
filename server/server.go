@@ -193,11 +193,6 @@ type dashStats struct {
 	CacheEntries   int
 	Uptime         string
 	RecentItems    []notify.RecentItem
-	SysMemAlloc    uint64
-	SysMemTotal    uint64
-	SysGoroutines  int
-	SysDiskFree    float64
-	SysDiskTotal   float64
 }
 
 type dedupEntry struct {
@@ -208,7 +203,7 @@ type dedupEntry struct {
 var srv *http.Server
 
 // Version is set via ldflags at build time: -X server.Version=v0.x.x
-var Version = "1.0.3"
+var Version = "dev"
 
 var rssJsonPath = "rss.json"
 
@@ -1957,22 +1952,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           {{if .HasAgent}}<span style="margin-left:12px;font-size:13px;color:var(--accent-2);">✓ 115 {{index .T "status_connected"}}</span>{{end}}
           <span style="margin-left:12px;font-size:13px;{{if .HasPassword}}color:var(--accent-2);{{else}}color:var(--warn);{{end}}">{{if .HasPassword}}🔒 {{index .T "pw_set"}}{{else}}⚠ {{index .T "pw_not_set"}}{{end}}</span>
         </div>
-        <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-top:10px;">
-          <div style="padding:8px 12px;background:var(--bg);border-radius:8px;text-align:center;">
-            <div id="sys-mem" style="font-size:18px;font-weight:700;color:var(--accent);">{{printf "%.0f" .DashStats.SysMemAlloc}} MB</div>
-            <div style="font-size:11px;color:var(--muted);">内存使用</div>
-          </div>
-          <div style="padding:8px 12px;background:var(--bg);border-radius:8px;text-align:center;">
-            <div id="sys-goroutines" style="font-size:18px;font-weight:700;color:var(--accent-2);">{{.DashStats.SysGoroutines}}</div>
-            <div style="font-size:11px;color:var(--muted);">协程数</div>
-          </div>
-          {{if .DashStats.SysDiskTotal}}
-          <div style="padding:8px 12px;background:var(--bg);border-radius:8px;text-align:center;">
-            <div id="sys-disk" style="font-size:18px;font-weight:700;color:#a78bfa;">{{printf "%.1f" .DashStats.SysDiskFree}} GB</div>
-            <div style="font-size:11px;color:var(--muted);">磁盘可用</div>
-          </div>
-          {{end}}
-        </div>
       </div>
     </div>
     {{if .DashStats.RecentItems}}
@@ -1989,22 +1968,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </div>
     </div>
     {{end}}
-    <script>
-    (function(){
-      // Auto-refresh system stats every 30s
-      function updateSysStats(){
-        fetch('/api/system').then(function(r){return r.json();}).then(function(d){
-          var el=document.getElementById('sys-mem');
-          if(el)el.textContent=d.mem_alloc_mb.toFixed(0)+' MB';
-          el=document.getElementById('sys-goroutines');
-          if(el)el.textContent=d.goroutines;
-          el=document.getElementById('sys-disk');
-          if(el)el.textContent=d.disk_free_gb.toFixed(1)+' GB';
-        }).catch(function(){});
-      }
-      setInterval(updateSysStats,30000);
-    })();
-    </script>
     {{end}}
 
     <!-- offline tasks page -->
@@ -3857,7 +3820,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/about", s.authCheck(s.handleAbout))
 	mux.HandleFunc("/api/tasks", s.authCheck(s.handleAPITasks))
 	mux.HandleFunc("/api/logs", s.authCheck(s.handleAPILogs))
-	mux.HandleFunc("/api/system", s.authCheck(s.handleAPISystem))
 	mux.HandleFunc("/api/notify/test", s.authCheck(s.handleNotifyTest))
 	mux.HandleFunc("/api/lang", s.authCheck(s.handleAPILang))
 }
@@ -4094,15 +4056,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data.DashStats.CacheEntries = globalDedup.TotalCount()
 	data.DashStats.Uptime = formatDuration(time.Since(s.startTime))
 	data.DashStats.RecentItems = notify.GetRecentItems()
-	// System stats
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	data.DashStats.SysMemAlloc = m.Alloc / 1024 / 1024 // MB
-	data.DashStats.SysMemTotal = m.Sys / 1024 / 1024
-	data.DashStats.SysGoroutines = runtime.NumGoroutine()
-	free, total := getDiskUsage(".")
-	data.DashStats.SysDiskFree = float64(free) / 1024 / 1024 / 1024
-	data.DashStats.SysDiskTotal = float64(total) / 1024 / 1024 / 1024
 
 	if err := dashboardTemplate.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -4835,25 +4788,6 @@ func (s *Server) handleAPITasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *Server) handleAPISystem(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	var diskFree, diskTotal uint64
-	if wd, err := os.Getwd(); err == nil {
-		_ = wd
-	}
-	// Get disk usage of current directory (cross-platform via syscall)
-	diskFree, diskTotal = getDiskUsage(".")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"mem_alloc_mb":   float64(m.Alloc) / 1024 / 1024,
-		"mem_total_mb":   float64(m.Sys) / 1024 / 1024,
-		"goroutines":     runtime.NumGoroutine(),
-		"disk_free_gb":   float64(diskFree) / 1024 / 1024 / 1024,
-		"disk_total_gb":  float64(diskTotal) / 1024 / 1024 / 1024,
-	})
 }
 
 func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {
