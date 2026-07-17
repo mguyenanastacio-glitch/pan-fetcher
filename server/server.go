@@ -203,7 +203,7 @@ type dedupEntry struct {
 var srv *http.Server
 
 // Version is set via ldflags at build time: -X server.Version=v0.x.x
-var Version = "1.0.5"
+var Version = "1.0.0"
 
 var rssJsonPath = "rss.json"
 
@@ -1052,6 +1052,7 @@ var translations = map[string]map[string]string{
 		"login_err":       "密码错误",
 		"lang_label":      "界面语言",
 		"search":          "🔍 资源搜索",
+		"indexer_search":  "🔍 聚合搜索",
 		"search_ph":       "输入关键词搜索资源...",
 		"search_btn":      "搜索",
 		"search_refresh":  "🔄 刷新",
@@ -1387,6 +1388,7 @@ var translations = map[string]map[string]string{
 		"login_err":       "Wrong password",
 		"lang_label":      "Language",
 		"search":          "🔍 Search",
+		"indexer_search":  "🔍 Aggregated Search",
 		"search_ph":       "Enter keywords to search...",
 		"search_btn":      "Search",
 		"search_refresh":  "🔄 Refresh",
@@ -1897,11 +1899,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       </select>
     </div>
     <div class="sidebar-search">
-      <input type="text" id="quick-search-input" placeholder="{{index .T "search"}}" value="{{.SearchQuery}}" onfocus="location.href='/search';this.blur()" autocomplete="off">
+      <input type="text" id="quick-search-input" placeholder="搜索..." value="" autocomplete="off" disabled>
     </div>
     <div class="sidebar-nav">
       <a href="/"{{if or (eq .Page "home") (eq .Page "")}} class="active"{{end}}>{{index .T "dashboard"}}</a>
       <a href="/tasks"{{if eq .Page "tasks"}} class="active"{{end}}>{{index .T "home"}}</a>
+      <a href="/search"{{if eq .Page "search"}} class="active"{{end}}>{{index .T "indexer_search"}}</a>
       <a href="/indexers"{{if eq .Page "indexers"}} class="active"{{end}}>{{index .T "indexers"}}</a>
       <a href="/fs"{{if eq .Page "fs"}} class="active"{{end}}>{{index .T "files"}}</a>
       <a href="/subs"{{if eq .Page "subs"}} class="active"{{end}}>{{index .T "subs"}}</a>
@@ -2359,7 +2362,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     {{if eq .Page "search"}}
     <div class="card panel">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-        <h2 style="margin:0;">{{index .T "search"}}</h2>
+        <h2 style="margin:0;">{{index .T "indexer_search"}}</h2>
         <button type="button" onclick="clearSearch()" style="margin:0;padding:4px 12px;font-size:12px;background:var(--accent-2);" title="清除搜索状态">{{index .T "search_refresh"}}</button>
       </div>
       <form action="/search" method="post" id="search-form" autocomplete="off">
