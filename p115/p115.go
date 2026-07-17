@@ -572,17 +572,18 @@ type SubInfo struct {
 // ProcessRSSFeed fetches an RSS feed, filters by keyword, and submits all matches.
 // Phase 1: lightweight info-hash extraction + dedup check (no torrent download).
 // Phase 2: resolve full magnet only for items that pass dedup.
-func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) {
+func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) []string {
 	feed := rsssite.GetFeed(rssURL)
 	if feed == nil {
 		log.Printf("[feed] failed to fetch RSS: %s", rssURL)
-		return
+		return nil
 	}
 
 	log.Printf("[feed] processing subKey=%q, items=%d", subKey, len(feed.Items))
 
 	type candidate struct {
 		magnet string
+		title  string
 	}
 	var candidates []candidate
 	skippedPhase1 := 0
@@ -621,7 +622,7 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) {
 				continue
 			}
 		}
-		candidates = append(candidates, candidate{magnet: magnet})
+		candidates = append(candidates, candidate{magnet: magnet, title: item.Title})
 	}
 
 	if skippedPhase1 > 0 {
@@ -632,19 +633,21 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) {
 	}
 	if len(candidates) == 0 {
 		log.Printf("[feed] all items already cached for keyword=%q in %s", keyword, rssURL)
-		return
+		return nil
 	}
 	log.Printf("[feed] found %d NEW items, submitting to cid=%s", len(candidates), cid)
 
 	var magnets []string
+	var names []string
 	for _, c := range candidates {
 		magnets = append(magnets, c.magnet)
+		names = append(names, c.title)
 	}
 	for i, urls := range chunkBy(magnets, defaultChunkSize) {
 		_, err := ag.Agent.OfflineAddUrl(urls, &option.OfflineAddOptions{SaveDirId: cid, SavePath: savepath})
 		if err != nil {
 			log.Printf("[feed] error: %v", err)
-			return
+			return names
 		}
 		log.Printf("[feed] chunk %d: submitted %d tasks", i+1, len(urls))
 		if ag.Dedup != nil {
@@ -657,6 +660,7 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) {
 			time.Sleep(time.Second * time.Duration(chunkDelay))
 		}
 	}
+	return names
 }
 
 // AppSettings holds runtime-configurable application settings.

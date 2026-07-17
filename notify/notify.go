@@ -13,13 +13,44 @@ import (
 )
 
 var (
-	mu         sync.Mutex
-	webhookURL string
-	tzLoc      *time.Location
-	logEnabled bool
-	logQueue   = make(chan string, 200)
-	client     = &http.Client{Timeout: 10 * time.Second}
+	mu          sync.Mutex
+	webhookURL  string
+	tzLoc       *time.Location
+	logEnabled  bool
+	logQueue    = make(chan string, 200)
+	client      = &http.Client{Timeout: 10 * time.Second}
+	recentItems []RecentItem
+	recentMax   = 50
 )
+
+// RecentItem is a newly added subscription resource shown on dashboard.
+type RecentItem struct {
+	Name string `json:"name"`
+	Time string `json:"time"`
+	Sub  string `json:"sub"`
+}
+
+// RecordItems adds items to the recent list for dashboard display.
+func RecordItems(sub string, names []string) {
+	mu.Lock()
+	defer mu.Unlock()
+	ts := now().Format("01-02 15:04")
+	for _, n := range names {
+		recentItems = append([]RecentItem{{Name: n, Time: ts, Sub: sub}}, recentItems...)
+	}
+	if len(recentItems) > recentMax {
+		recentItems = recentItems[:recentMax]
+	}
+}
+
+// RecentItems returns a copy of the recent items list.
+func GetRecentItems() []RecentItem {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]RecentItem, len(recentItems))
+	copy(out, recentItems)
+	return out
+}
 
 func init() {
 	go logSender()
@@ -124,11 +155,18 @@ func doSend(url, content string) {
 }
 
 // TaskSubmitted formats a message for magnet task submission.
-func TaskSubmitted(count int, cid string) string {
-	return fmt.Sprintf(`## 离线任务已提交
-> **数量**: %d 个
-> **目标目录**: %s
-> **时间**: %s`, count, cid, now().Format("15:04:05"))
+func TaskSubmitted(count int, cid string, names []string) string {
+	msg := fmt.Sprintf("## 离线任务已提交\n> **数量**: %d 个\n> **目标目录**: %s\n> **时间**: %s", count, cid, now().Format("15:04:05"))
+	if len(names) > 0 {
+		msg += "\n> **资源**:"
+		for _, n := range names {
+			if len(n) > 80 {
+				n = n[:80] + "…"
+			}
+			msg += "\n> - " + n
+		}
+	}
+	return msg
 }
 
 // TaskFailed formats a message for a failed task.
@@ -140,11 +178,18 @@ func TaskFailed(name string, cid string) string {
 }
 
 // RSSFound formats a message when new items are found in RSS feed.
-func RSSFound(subName string, count int) string {
-	return fmt.Sprintf(`## RSS 新资源
-> **订阅**: %s
-> **新增**: %d 条
-> **时间**: %s`, subName, count, now().Format("15:04:05"))
+func RSSFound(subName string, count int, names []string) string {
+	msg := fmt.Sprintf("## RSS 新资源\n> **订阅**: %s\n> **新增**: %d 条\n> **时间**: %s", subName, count, now().Format("15:04:05"))
+	if len(names) > 0 {
+		msg += "\n> **资源**:"
+		for _, n := range names {
+			if len(n) > 80 {
+				n = n[:80] + "…"
+			}
+			msg += "\n> - " + n
+		}
+	}
+	return msg
 }
 
 // ServerStarted formats a startup message.

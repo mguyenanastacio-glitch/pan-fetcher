@@ -38,7 +38,7 @@ import (
 
 type Agent interface {
 	AddMagnetTask([]string, string, string) error
-	ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string)
+	ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) []string
 	OfflineClear(int) error
 	ListTasks() ([]p115pkg.TaskItem, error)
 	ListDir(string) ([]p115pkg.DirEntry, error)
@@ -190,6 +190,7 @@ type dashStats struct {
 	ActiveIndexers int
 	CacheEntries   int
 	Uptime         string
+	RecentItems    []notify.RecentItem
 }
 
 type dedupEntry struct {
@@ -1857,6 +1858,20 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         </div>
       </div>
     </div>
+    {{if .DashStats.RecentItems}}
+    <div class="card panel" style="margin-top:16px;">
+      <h3 style="margin:0 0 10px;">🆕 最近新增资源</h3>
+      <div style="max-height:300px;overflow-y:auto;">
+        {{range .DashStats.RecentItems}}
+        <div style="padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:8px;">
+          <span style="color:var(--muted);font-size:11px;white-space:nowrap;">{{.Time}}</span>
+          <span style="color:var(--muted);font-size:11px;white-space:nowrap;">[{{.Sub}}]</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{.Name}}">{{.Name}}</span>
+        </div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
     {{end}}
 
     <!-- offline tasks page -->
@@ -3606,11 +3621,12 @@ func (s *Server) autoRunSubscriptions() {
 					}()
 					if s.Agent != nil && e.Cid != "" {
 						before := globalDedup.SubCount(subKey)
-						s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, subKey)
+						names := s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, subKey)
 						after := globalDedup.SubCount(subKey)
 						newItems := after - before
 						if newItems > 0 {
-							notify.Send(notify.RSSFound(subKey, newItems), ws.NotifyRSS)
+							notify.RecordItems(subKey, names)
+							notify.Send(notify.RSSFound(subKey, newItems, names), ws.NotifyRSS)
 						}
 					}
 				}()
@@ -3943,6 +3959,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data.DashStats.Uptime = formatDuration(time.Since(s.startTime))
+	data.DashStats.RecentItems = notify.GetRecentItems()
 
 	if err := dashboardTemplate.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3987,7 +4004,7 @@ func (s *Server) handleAddTask(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[task] web submitted %d tasks, cid=%s", len(task.Tasks), task.Cid)
 	ws := s.loadWebSettings()
-	notify.Send(notify.TaskSubmitted(len(task.Tasks), task.Cid), ws.NotifyLog || ws.NotifyTask)
+	notify.Send(notify.TaskSubmitted(len(task.Tasks), task.Cid, task.Tasks), ws.NotifyLog || ws.NotifyTask)
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","message":"%s"}`, trf(s.langFromAgent(), "tasks_submitted_fmt", len(task.Tasks)))
 }
