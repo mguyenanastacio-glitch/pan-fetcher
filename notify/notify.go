@@ -32,9 +32,9 @@ type RecentItem struct {
 
 // RecordItems adds items to the recent list for dashboard display.
 func RecordItems(sub string, names []string) {
+	ts := now().Format("01-02 15:04")
 	mu.Lock()
 	defer mu.Unlock()
-	ts := now().Format("01-02 15:04")
 	for _, n := range names {
 		recentItems = append([]RecentItem{{Name: n, Time: ts, Sub: sub}}, recentItems...)
 	}

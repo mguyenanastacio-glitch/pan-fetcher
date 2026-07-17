@@ -10,9 +10,29 @@ permissions:
   packages: write
 
 jobs:
+  # Create the GitHub Release first with annotated tag message as body.
+  # Build jobs then only upload assets without overwriting the body.
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --notes-from-tag \
+            --title "${{ github.ref_name }}" \
+            --prerelease=${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+
   build:
     name: ${{ matrix.goos }}-${{ matrix.goarch }}
     runs-on: ${{ matrix.runner }}
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +87,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           files: pan-fetcher-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.*
-          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
 
   docker:
     name: Docker Image
