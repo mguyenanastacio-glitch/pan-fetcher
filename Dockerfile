@@ -13,7 +13,7 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o pan-fetcher .
 # Stage 2: Runtime
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata sqlite-libs
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs curl
 
 ENV TZ=Asia/Shanghai
 
@@ -21,8 +21,13 @@ WORKDIR /app
 COPY --from=builder /build/pan-fetcher .
 COPY --from=builder /build/indexers/ ./indexers/
 
+# Default config — override via volume mount for production
+RUN echo '[server]\nport = 8115' > /app/config.toml
+
 VOLUME ["/app/data"]
 EXPOSE 8115
 
-ENTRYPOINT ["./pan-fetcher", "server"]
-CMD ["--port", "8115"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -fs http://localhost:8115/ || exit 1
+
+ENTRYPOINT ["./pan-fetcher", "server", "--port", "8115"]

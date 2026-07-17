@@ -1,7 +1,7 @@
-version: "3.8"
-
 services:
   pan-fetcher:
+    # Use Docker Hub or GHCR image:
+    # image: mguyenanastacio/pan-fetcher:latest
     image: ghcr.io/mguyenanastacio-glitch/pan-fetcher:latest
     container_name: pan-fetcher
     restart: unless-stopped
@@ -9,11 +9,6 @@ services:
       - "8115:8115"
     volumes:
       - ./data:/app/data
-      - ./config.toml:/app/config.toml:ro
+      - ./config.toml:/app/config.toml
     environment:
       - TZ=Asia/Shanghai
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8115/api/logs"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
