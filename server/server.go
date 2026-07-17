@@ -1944,7 +1944,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <div style="padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;gap:8px;">
           <span style="color:var(--muted);font-size:11px;white-space:nowrap;">{{.Time}}</span>
           <span style="color:var(--muted);font-size:11px;white-space:nowrap;">[{{.Sub}}]</span>
-          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{.Name}}">{{.Name}}</span>
+          <span style="flex:1;word-break:break-all;" title="{{.Name}}">{{.Name}}</span>
         </div>
         {{end}}
       </div>
@@ -3634,6 +3634,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Load caches
 	globalDedup.Load()
 	rsssite.SetTorrentHashCache(globalDedup)
+	notify.LoadRecentItems()
 
 	// Start subscription auto-runner
 	go s.autoRunSubscriptions()

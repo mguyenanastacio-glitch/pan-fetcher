@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -20,7 +22,8 @@ var (
 	logQueue    = make(chan string, 200)
 	client      = &http.Client{Timeout: 10 * time.Second}
 	recentItems []RecentItem
-	recentMax   = 50
+	recentMax   = 10
+	recentFile  = "recent-items.json"
 )
 
 // RecentItem is a newly added subscription resource shown on dashboard.
@@ -34,12 +37,51 @@ type RecentItem struct {
 func RecordItems(sub string, names []string) {
 	ts := now().Format("01-02 15:04")
 	mu.Lock()
-	defer mu.Unlock()
 	for _, n := range names {
 		recentItems = append([]RecentItem{{Name: n, Time: ts, Sub: sub}}, recentItems...)
 	}
 	if len(recentItems) > recentMax {
 		recentItems = recentItems[:recentMax]
+	}
+	saveRecentLocked()
+	n := len(recentItems)
+	mu.Unlock()
+	log.Printf("[notify] recorded %d items for %q, total=%d", len(names), sub, n)
+}
+
+// LoadRecentItems restores the recent items list from disk.
+func LoadRecentItems() {
+	mu.Lock()
+	data, err := os.ReadFile(recentFile)
+	if err != nil {
+		mu.Unlock()
+		return
+	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	if !utf8.Valid(data) {
+		mu.Unlock()
+		return
+	}
+	if err := json.Unmarshal(data, &recentItems); err != nil {
+		mu.Unlock()
+		return
+	}
+	if len(recentItems) > recentMax {
+		recentItems = recentItems[:recentMax]
+	}
+	n := len(recentItems)
+	mu.Unlock()
+	log.Printf("[notify] loaded %d recent items from disk", n)
+}
+
+func saveRecentLocked() {
+	data, err := json.Marshal(recentItems)
+	if err != nil {
+		log.Printf("[notify] recent save marshal error: %v", err)
+		return
+	}
+	if err := os.WriteFile(recentFile, data, 0644); err != nil {
+		log.Printf("[notify] recent save write error: %v", err)
 	}
 }
 
