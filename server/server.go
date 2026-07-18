@@ -2483,7 +2483,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var kw=buildGroupKeyword();
       var fd=new URLSearchParams();
       var form=document.getElementById('search-form');
-      if(form){var fdx=new FormData(form);for(var k of fdx.keys()){if(k!=='keyword')fd.append(k,fdx.get(k));}}
+      if(form){var fdx=new FormData(form);for(var k of new Set(fdx.keys())){if(k!=='keyword'){fdx.getAll(k).forEach(function(v){fd.append(k,v);});}}}
       fd.set('keyword',kw);fd.set('offset','0');
       try{
         var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
@@ -3646,7 +3646,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:2;min-width:120px;"><label style="font-size:12px;">名称</label><input name="name" id="sub-name" style="font-size:13px;"></div>
           <div style="flex:2;min-width:160px;"><label style="font-size:12px;">RSS 地址</label><input name="url" id="sub-url" style="font-size:13px;"></div>
-          <div style="flex:1;min-width:110px;"><label style="font-size:12px;">115 目录 ID (可选)</label><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;"></div>
+          <div style="flex:1;min-width:110px;"><label style="font-size:12px;">115 目录 ID (可选)</label><div style="display:flex;gap:4px;"><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;flex:1;"><button type="button" onclick="window.open('/fs','_blank')" title="浏览115目录" style="font-size:13px;padding:4px 8px;margin:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;cursor:pointer;">📂</button></div></div>
           <div style="flex:1;min-width:90px;"><label style="font-size:12px;">子目录 (可选)</label><input name="savepath" placeholder="savepath" style="font-size:13px;"></div>
         </div>
         <div style="margin-top:8px;">
