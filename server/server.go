@@ -2502,6 +2502,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         currentPage=1;
         totalPages=searchTotal>0?Math.ceil(searchTotal/pageSize):1;
         renderPagination();
+        // Rebuild chip bar with filtered tags
+        if(j.all_tags)window._currentAllTags=j.all_tags;
+        if(j.all_groups)window._currentAllGroups=j.all_groups;
+        buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),document.getElementById('search-q')?.value||'',document.querySelector('select[name="category"]')?.value||'');
         document.getElementById('search-results').scrollIntoView({block:'start'});
       }catch(e){console.error(e);}
     }
@@ -2539,24 +2543,26 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       });return groups;
     }
 
+    // Mutable tag lists: initially from server, updated by filterByChips
+    window._currentAllTags={{.AllTagsJSON}};
+    window._currentAllGroups={{.AllGroupsJSON}};
+
     function buildGroupChips(container,table,rssQuery,rssCategory){
-      // Pre-populate _serverGroups from server-validated groups (covers ALL pages)
-      var allGroupsFromServer={{.AllGroupsJSON}};
+      var allGroups=window._currentAllGroups||[];
       window._serverGroups={};
-      if(allGroupsFromServer&&allGroupsFromServer.length){
-        allGroupsFromServer.forEach(function(g){window._serverGroups[g]=true;});
+      if(allGroups&&allGroups.length){
+        allGroups.forEach(function(g){window._serverGroups[g]=true;});
       }
-      // Scan table rows to add any additional groups from current page
       var clientGroups=tagRowsWithGroup(table);
-      var allTagsFromServer={{.AllTagsJSON}};
+      var allTags=window._currentAllTags||[];
       var groups;
-      if(allTagsFromServer&&allTagsFromServer.length){
-        groups=allTagsFromServer;
+      if(allTags&&allTags.length){
+        groups=allTags;
       }else{
         groups=clientGroups;
       }
       var old=container.querySelector('#group-chip-bar');if(old)old.remove();
-      if(!table.querySelectorAll('tbody tr').length&&!allTagsFromServer)return;
+      if(!table.querySelectorAll('tbody tr').length&&!allTags.length)return;
       renderChipBar(container,table,groups,null,rssQuery,rssCategory);
     }
 
@@ -5279,6 +5285,46 @@ func (s *Server) handleTMDBTrending(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"movies": moviesOut, "tv": tvOut})
 }
 
+// buildAllTagsList returns tag strings as []string for JSON encoding
+func buildAllTagsList(results []indexer.SearchResult) []string {
+	re := regexp.MustCompile(`[\[【]([^\]】]{1,40})[\]】]`)
+	seen := make(map[string]bool)
+	var tags []string
+	for _, r := range results {
+		matches := re.FindAllStringSubmatch(r.Title, -1)
+		for _, m := range matches {
+			tag := strings.TrimSpace(m[1])
+			tag = strings.ReplaceAll(tag, "DBD制作组", "DBD-Raws")
+			tag = strings.ReplaceAll(tag, "桜都字幕組", "桜都字幕组")
+			if tag == "" || len(tag) > 40 { continue }
+			if regexp.MustCompile(`^\d+\(\d+\)$`).MatchString(tag) { continue }
+			if regexp.MustCompile(`^\d{1,4}$`).MatchString(tag) { continue }
+			lk := strings.ToLower(tag)
+			if !seen[lk] { seen[lk] = true; tags = append(tags, tag) }
+		}
+	}
+	if tags == nil { tags = []string{} }
+	return tags
+}
+
+// buildAllGroupsList returns validated group names as []string for JSON encoding
+func buildAllGroupsList(results []indexer.SearchResult) []string {
+	groupRe := regexp.MustCompile(`^[[【]([^\]】]{1,40})[\]】]`)
+	seen := make(map[string]bool)
+	var groups []string
+	for _, r := range results {
+		if m := groupRe.FindStringSubmatch(r.Title); m != nil {
+			g := strings.TrimSpace(m[1])
+			g = strings.ReplaceAll(g, "DBD制作组", "DBD-Raws")
+			g = strings.ReplaceAll(g, "桜都字幕組", "桜都字幕组")
+			lk := strings.ToLower(g)
+			if !seen[lk] && isValidGroup(g) { seen[lk] = true; groups = append(groups, g) }
+		}
+	}
+	if groups == nil { groups = []string{} }
+	return groups
+}
+
 func buildAllTagsJSON(results []indexer.SearchResult) template.JS {
 	re := regexp.MustCompile(`[\[【]([^\]】]{1,40})[\]】]`)
 	seen := make(map[string]bool)
@@ -6209,9 +6255,11 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 	done := offset+len(results) >= len(cached)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"results": results,
-		"done":    done,
-		"total":   len(cached),
+		"results":    results,
+		"done":       done,
+		"total":      len(cached),
+		"all_tags":   buildAllTagsList(cached),
+		"all_groups": buildAllGroupsList(cached),
 	})
 }
 
