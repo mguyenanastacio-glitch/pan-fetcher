@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -573,6 +574,12 @@ type SubInfo struct {
 // Phase 1: lightweight info-hash extraction + dedup check (no torrent download).
 // Phase 2: resolve full magnet only for items that pass dedup.
 func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) []string {
+	// Fallback: extract keyword from RSS URL if filter is empty
+	if keyword == "" {
+		if u, err := url.Parse(rssURL); err == nil {
+			keyword = u.Query().Get("keyword")
+		}
+	}
 	feed := rsssite.GetFeed(rssURL)
 	if feed == nil {
 		log.Printf("[feed] failed to fetch RSS: %s", rssURL)
