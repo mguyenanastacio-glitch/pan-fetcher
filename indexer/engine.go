@@ -427,7 +427,6 @@ func (e *Engine) buildSearchURL(def *IndexerDefinition, req SearchRequest) (stri
 	tmplData := map[string]interface{}{
 		"Keywords": req.Query,
 		"Keyword":  req.Query,
-		"Category": req.Category,
 		"Page":     req.Page,
 		"Query": map[string]string{
 			"Keywords": req.Query,

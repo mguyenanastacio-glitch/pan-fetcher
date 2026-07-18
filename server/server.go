@@ -4481,7 +4481,7 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jackettActiveMu.Unlock()
 		jc := s.jackettConfig()
-		if jr, err := jackett.Search(jc, q, indexer.TorznabCategoryIDs(category), 0); err == nil {
+		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
 			for _, jr := range jr {
 				if len(indexers) == 0 && !jackettActiveSet[jr.Tracker] {
 					continue
@@ -4526,11 +4526,6 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Apply keyword filter using same group-aware logic as search
 	se.Results = applyKeywordFilter(se.Results, r.URL.Query().Get("keyword"))
-
-	// Apply category filter (post-search fallback)
-	if category != "" {
-		se.Results = indexer.FilterByCategory(se.Results, category)
-	}
 
 	// Build RSS XML
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
@@ -6350,7 +6345,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				defer wg.Done()
 				if s.JackettURL != "" && s.JackettAPIKey != "" && (len(indexers) == 0 || hasJackettSelection) {
 					jc := s.jackettConfig()
-					sr.jackett, sr.jerr = jackett.Search(jc, q, indexer.TorznabCategoryIDs(category), 0)
+					sr.jackett, sr.jerr = jackett.Search(jc, q, nil, 0)
 				}
 			}()
 
@@ -6410,10 +6405,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				se.Errors = make(map[string]string)
 			}
 			se.Errors["jackett"] = sr.jerr.Error()
-		}
-		// Apply category filter (post-search fallback for trackers that don't support it)
-		if category != "" {
-			se.Results = indexer.FilterByCategory(se.Results, category)
 		}
 		data.SearchQuery = q
 		data.SearchKeyword = keyword
@@ -6631,7 +6622,7 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 
 		jackettOff := (ctx.NextPage - 1) * 100
 		jc := s.jackettConfig()
-		if jr, err := jackett.Search(jc, ctx.Query, indexer.TorznabCategoryIDs(ctx.Category), jackettOff); err == nil {
+		if jr, err := jackett.Search(jc, ctx.Query, nil, jackettOff); err == nil {
 			for _, r := range jr {
 				trackerLower := strings.ToLower(r.Tracker)
 				if !jackettActiveSet[trackerLower] {
