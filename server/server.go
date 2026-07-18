@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -162,6 +163,7 @@ type dashboardData struct {
 	SearchTotal   int
 	PageSize      int
 	SearchErrors  map[string]string
+	AllTagsJSON   template.JS // JSON of all unique tags from full search results
 	SearchCategory string
 	SearchSort     string
 	SearchIndexers []string
@@ -2378,7 +2380,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       <form action="/search" method="post" id="search-form" autocomplete="off">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <input name="q" id="search-q" placeholder="{{index .T "search_ph"}}" value="{{.SearchQuery}}" style="flex:3;min-width:160px;" autofocus>
-          <input name="keyword" id="search-keyword" placeholder="{{index .T "filter_placeholder"}}" value="{{.SearchKeyword}}" style="flex:1.5;min-width:100px;" oninput="filterResults()">
+          <input type="hidden" name="keyword" id="search-keyword" value="{{.SearchKeyword}}">
           <select name="category" style="flex:1;min-width:100px;">
             <option value="">{{index .T "all_categories"}}</option>
             <option value="anime"{{if eq .SearchCategory "anime"}} selected{{end}}>{{index .T "category_anime"}}</option>
@@ -2406,47 +2408,28 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         </div>
         {{end}}
       </form>
-      {{if .RssURL}}
-      <div style="margin-top:6px;display:flex;gap:8px;">
-        <button type="button" onclick="toggleSubForm()" style="margin-top:0;padding:4px 12px;font-size:11px;background:var(--accent-2);white-space:nowrap;">{{index .T "subscribe_search"}}</button>
-      </div>
-      {{end}}
-      <!-- subscription form (hidden) -->
-      {{if .RssURL}}
-      <div id="sub-form" style="display:none;margin-top:12px;padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;">
-        <h3 style="margin:0 0 10px;">{{index .T "add_rss_sub_title"}}</h3>
-        <form action="/search/subscribe" method="post">
-          <input type="hidden" name="query" value="{{.SearchQuery}}"><input type="hidden" name="category" value="{{.SearchCategory}}">
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-            <div style="flex:2;min-width:140px;"><label style="font-size:12px;">{{index .T "sub_name_label"}}</label><input name="name" placeholder="{{index .T "sub_name_placeholder"}}" value="{{.SearchQuery}}" style="font-size:13px;"></div>
-            <div style="flex:3;min-width:200px;"><label style="font-size:12px;">{{index .T "rss_addr_label"}}</label><input name="url" placeholder="{{index .T "rss_addr_placeholder"}}" value="{{.RssURL}}" style="font-size:13px;"></div>
-            <div style="flex:1;min-width:80px;"><label style="font-size:12px;">{{index .T "filter_label"}}</label><input name="filter" id="sub-filter" placeholder="{{index .T "filter_placeholder"}}" value="{{.SearchKeyword}}" style="font-size:13px;"></div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
-            <div style="flex:1;min-width:140px;"><label style="font-size:12px;">{{index .T "dir_id_opt"}} <button type="button" onclick="browseDirsFor('sub-cid')" style="padding:2px 8px;font-size:11px;margin:0;background:var(--accent-2);">{{index .T "browse_btn"}}</button></label><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;"></div>
-            <div style="flex:1;min-width:100px;"><label style="font-size:12px;">{{index .T "subdir_opt"}}</label><input name="savepath" placeholder="savepath" style="font-size:13px;"></div>
-            <button type="submit" style="margin-top:0;background:var(--accent-2);">{{index .T "add_sub_btn"}}</button>
-          </div>
-        </form>
-      </div>
-      {{end}}
       {{if .SearchResults}}
-      <div style="margin-top:16px;">
+      <div style="margin-top:16px;" id="search-results-wrap">
         <table class="tbl" id="search-results"><thead><tr><th>#</th><th>{{index .T "name"}}</th><th>{{index .T "size"}}</th><th>↑</th><th>{{index .T "date_label"}}</th><th>{{index .T "indexer_label"}}</th><th></th></tr></thead><tbody>
-        {{range $i, $r := .SearchResults}}<tr data-title="{{$r.Title}}">
+        {{range $i, $r := .SearchResults}}<tr data-title="{{$r.Title}}" data-group="{{$r.Group}}">
           <td class="muted" style="font-size:11px;text-align:center;">{{add $i 1}}</td>
           <td>{{if $r.PageURL}}<a href="{{$r.PageURL}}" target="_blank">{{$r.Title}}</a>{{else}}{{$r.Title}}{{end}}</td>
           <td class="muted">{{$r.SizeFmt}}</td><td>{{$r.Seeders}}</td><td class="muted" style="font-size:11px;">{{$r.DateFmt}}</td><td class="muted">{{$r.IndexerName}}</td>
           <td>{{if $r.MagnetURL}}<button data-magnet="{{$r.MagnetURL}}" onclick="addTaskWithBrowse(this.getAttribute('data-magnet'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>{{end}}</td>
         </tr>{{end}}</tbody></table>
-      </div>
       <div id="pagination-bar" style="display:flex;justify-content:center;align-items:center;gap:4px;margin-top:14px;flex-wrap:wrap;"></div>
+      </div>
       {{else}}{{if .SearchQuery}}<div class="hint" style="margin-top:12px;">{{index .T "search_no_result"}}</div>{{end}}{{end}}
       {{if .SearchErrors}}{{range $id, $err := .SearchErrors}}<div style="padding:4px 8px;margin:2px 0;background:#fef2f2;color:#991b1b;border-radius:6px;word-break:break-all;">⚠ {{$err}}</div>{{end}}{{end}}
       <!-- saved searches -->
       {{if .SavedSearches}}<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);"><h3 style="margin:0 0 8px;">{{index .T "saved_searches_title"}}</h3>{{range .SavedSearches}}<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><span style="flex:1;">🔍 {{.Query}}{{if .Category}} <span style="color:var(--muted);font-size:11px;">[{{.Category}}]</span>{{end}}</span><form action="/search" method="post" style="display:inline;"><input type="hidden" name="q" value="{{.Query}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="sort" value="{{.Sort}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">{{index $.T "search_btn_sm"}}</button></form><form action="/search" method="post" style="display:inline;"><input type="hidden" name="action" value="unsubscribe"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">{{index $.T "delete_btn"}}</button></form></div>{{end}}</div>{{end}}
     </div>
     <script>
+    document.getElementById('search-form').addEventListener('submit',function(){
+      var kw=document.getElementById('search-keyword'),bar=document.getElementById('group-chip-bar');
+      if(kw&&bar){var tags=[];bar.querySelectorAll('span[data-cat]').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)'){var t=c.getAttribute('data-filter');if(t&&tags.indexOf(t)===-1)tags.push(t);}});
+      if(tags.length)kw.value=tags.join(' ');}
+    });
     var searchTotal={{.SearchTotal}};
     var pageSize={{.PageSize}};
     var currentPage=1;
@@ -2459,6 +2442,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
       sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
+      setTimeout(function(){buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),'{{.SearchQuery}}','{{.SearchCategory}}');},0);
       {{else}}
       var savedQuery=sessionStorage.getItem('pan-fetcher-query');
       var savedPage=sessionStorage.getItem(pgKey);
@@ -2468,6 +2452,91 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     })();
     </script>
     {{end}}
+
+    <script>
+    // === Shared: tag extraction, AI classification, chip rendering ===
+    var activeRSSFilters=[];
+
+    function updateRSSFilterTags(tags){
+      var d=document.getElementById('sub-filter-tags'),ta=document.getElementById('sub-filter');
+      if(!d||!ta)return;
+      if(!tags.length){d.innerHTML='<span style="color:var(--muted);">未选择</span>';ta.value='';}
+      else{d.innerHTML=tags.map(function(t){return '<span style="padding:2px 10px;border-radius:12px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;" onclick="event.stopPropagation();var i=activeRSSFilters.indexOf(\''+t.replace(/'/g,"\\'")+'\');if(i!==-1){activeRSSFilters.splice(i,1);updateRSSFilterTags(activeRSSFilters);updateChipBarFromFilters();}">'+t+' &times;</span>';}).join('');ta.value=tags.join('\n');}
+      window.activeRSSFilters=tags;
+    }
+    function updateChipBarFromFilters(){
+      var bar=document.getElementById('group-chip-bar');if(!bar)return;
+      var set=activeRSSFilters.map(function(t){return t.toLowerCase();});
+      bar.querySelectorAll('span[data-filter]:not([data-filter=""])').forEach(function(c){var a=set.indexOf(c.getAttribute('data-filter').toLowerCase())!==-1;c.style.background=a?'var(--accent)':'var(--bg)';c.style.color=a?'#fff':'';c.style.borderColor=a?'var(--accent)':'var(--line)';});
+      var all=bar.querySelector('span[data-filter=""]');if(all){all.style.background=activeRSSFilters.length?'var(--bg)':'var(--accent)';all.style.color=activeRSSFilters.length?'':'#fff';}
+      var kw=document.getElementById('search-keyword');if(kw)kw.value=activeRSSFilters.join(' ');
+    }
+    function extractSeason(text){
+      var n=0,cn={一:1,二:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10,十一:11,十二:12,十三:13,十四:14,十五:15,十六:16,十七:17,十八:18,十九:19,二十:20};
+      var cm=text.match(/第([一二三四五六七八九十]+|\d+)\s*(季|期)/);if(cm)n=cn[cm[1]]||parseInt(cm[1])||0;
+      if(!n){var sm=text.match(/Season\s*(\d+)/i);if(sm)n=parseInt(sm[1])||0;}
+      if(!n){var sm2=text.match(/(\d+)(?:st|nd|rd|th)\s*Season/i);if(sm2)n=parseInt(sm2[1])||0;}
+      return n>0&&n<=99?'S'+String(n).padStart(2,'0'):'';
+    }
+    function classifyTag(tag){
+      var t=tag.toLowerCase();
+      if(/^\d+\(\d+\)$/.test(tag)||/^\d{1,4}$/.test(tag)||/^(vol|volume|disc|cd|part|pt)[\s.]*\d+$/i.test(t))return null;
+      if(/^s\d{2}$/.test(t))return{cat:'season',label:'📅 季'};
+      if(/^\d{3,4}[pi]$/.test(t)||/^4k$/i.test(t))return{cat:'resolution',label:'📐 分辨率'};
+      if(/^(x26[45]|hevc|avc|av1|vp\d|flac|aac|opus|ac3|ddp?|dts|truehd|pcm|alac)/i.test(t)||/^(hevc-10bit|avc\s*aac|flac\s*\d|aac\s*avc)/i.test(t))return{cat:'codec',label:'🎞 编码'};
+      if(/^(web-dl|webrip|bdrip|bd|dvdrip|hdtv|tvrip|bluray|remux)/i.test(t)||/^(viutv|baha|iqiyi|b-global|cr|netflix|amazon|hulu|disney|bahamut|aniplus|at-x)/i.test(t))return{cat:'source',label:'📡 来源'};
+      if(/^(mp4|mkv|avi|ts|m2ts)$/i.test(t))return{cat:'container',label:'📦 容器'};
+      if(/^(cht|chs|jpn|eng|kor|繁|简|日|英|中|外挂|内封|内嵌|字幕)/i.test(t)||/^(简繁|繁简|繁体|简体|中文|日语|英语|韩语)/.test(tag))return{cat:'language',label:'🌐 语言'};
+      // Group: only from server-validated data-group
+      if(window._serverGroups&&window._serverGroups[tag])return{cat:'group',label:'👥 字幕组'};
+      return{cat:'other',label:'🏷 其他'};
+    }
+    function tagRowsWithGroup(table){
+      if(!table)return[];var rows=table.querySelectorAll('tbody tr');if(!rows.length)return[];var groups=[],seen={};
+      window._serverGroups={};
+      rows.forEach(function(tr){var g=tr.getAttribute('data-group');if(g)window._serverGroups[g]=true;});
+      rows.forEach(function(tr){var g=tr.getAttribute('data-group');if(g)window._serverGroups[g]=true;
+      var td=tr.querySelector('td:nth-child(2)');var text=td?td.textContent.trim():(tr.getAttribute('data-title')||'');var allTags=[];var re=/[\[【]([^\]】]{1,40})[\]】]/g;var m;while((m=re.exec(text))!==null){var tag=m[1].trim().replace(/^DBD制作组$/,'DBD-Raws').replace(/^桜都字幕組$/,'桜都字幕组');if(!tag||tag.length>40||/^\d+\(\d+\)$/.test(tag)||/^\d{1,4}$/.test(tag)||/^(vol|volume|disc|cd|part|pt|ep)[\s.]*\d+$/i.test(tag))continue;tag=tag.replace(/\s+/g,' ').trim();if(tag)allTags.push(tag);}
+      if(!allTags.length){var fm=text.match(/^([A-Za-z0-9_-]{2,20})(?=\s*[\[/])/);if(fm)allTags.push(fm[1]);}
+      var pt=text.replace(/\[[^\]]*\]/g,' ').replace(/\s+/g,' ').trim();var sTag=extractSeason(pt);if(sTag)allTags.push(sTag);
+      var sm=text.match(/(?:^|\s)S(\d{1,3})\b(?![^\[\]]*\])/);if(sm&&parseInt(sm[1])<=99){var st='S'+String(parseInt(sm[1])).padStart(2,'0');if(allTags.indexOf(st)===-1)allTags.push(st);}
+      tr.setAttribute('data-group',allTags.join(' '));
+      allTags.forEach(function(g){var gk=g.toLowerCase();if(!seen[gk]){seen[gk]=true;groups.push(g);}});
+      });return groups;
+    }
+
+    function buildGroupChips(container,table,rssQuery,rssCategory){
+      // Always scan table rows to populate _serverGroups (needed by classifyTag for group detection)
+      var clientGroups=tagRowsWithGroup(table);
+      var allTagsFromServer={{.AllTagsJSON}};
+      var groups;
+      if(allTagsFromServer&&allTagsFromServer.length){
+        groups=allTagsFromServer;
+      }else{
+        groups=clientGroups;
+      }
+      var old=container.querySelector('#group-chip-bar');if(old)old.remove();
+      if(!table.querySelectorAll('tbody tr').length&&!allTagsFromServer)return;
+      renderChipBar(container,table,groups,null,rssQuery,rssCategory);
+    }
+
+    function renderChipBar(container,table,groups,catMap,rssQuery,rssCategory){
+      var bar=document.createElement('div');bar.id='group-chip-bar';bar.style.cssText='display:flex;flex-direction:column;gap:5px;margin-bottom:10px;';
+      var kwEl=document.getElementById('search-keyword');var hasKw=kwEl&&kwEl.value.trim()!=='';var akw=kwEl?kwEl.value.trim().toLowerCase():'';var akwSet=akw?akw.split(/[\s,]+/):[];
+      if(hasKw){activeRSSFilters=kwEl.value.trim().split(/[\s,]+/).filter(Boolean);updateRSSFilterTags(activeRSSFilters);}
+      function mkChip(t,f,isA){var c=document.createElement('span');c.textContent=t;c.setAttribute('data-filter',f);c.style.cssText='padding:3px 10px;border-radius:12px;font-size:11px;white-space:nowrap;cursor:pointer;background:'+(isA?'var(--accent)':'var(--bg)')+';color:'+(isA?'#fff':'')+';border:1px solid '+(isA?'var(--accent)':'var(--line)');return c;}
+      var top=document.createElement('div');top.style.cssText='display:flex;flex-wrap:wrap;gap:6px;align-items:center;';top.appendChild(mkChip('全部','',!hasKw));
+      var rss=document.createElement('span');rss.textContent='+ RSS';rss.id='chip-rss-btn';rss.style.cssText='padding:4px 14px;border-radius:14px;background:var(--accent-2);color:#fff;cursor:pointer;font-size:12px;margin-left:auto;';
+      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-category').value=rssCategory||'';document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);if(rssCategory)u+='&category='+encodeURIComponent(rssCategory);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=(activeRSSFilters||[]).join(' ');if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;document.getElementById('sub-filter').value=(activeRSSFilters||[]).join('\n');updateRSSFilterTags(activeRSSFilters||[]);sf.style.display='flex';}};
+      top.appendChild(rss);bar.appendChild(top);
+      var cats={},co=[],cl={group:'👥 字幕组',source:'📡 来源',codec:'🎞 编码',resolution:'📐 分辨率',language:'🌐 语言',container:'📦 容器',season:'📅 季',other:'🏷 其他'};
+      groups.forEach(function(g){var ck;if(catMap&&catMap[g])ck=catMap[g];else{var cl2=classifyTag(g);if(!cl2)return;ck=cl2.cat;}if(!cats[ck]){cats[ck]={label:cl[ck]||('🏷 '+ck),tags:[],key:ck};co.push(ck);}cats[ck].tags.push(g);});
+      co.forEach(function(ck){var cat=cats[ck];var row=document.createElement('div');row.style.cssText='display:flex;flex-wrap:wrap;gap:4px;align-items:center;';var lbl=document.createElement('span');lbl.textContent=cat.label;lbl.style.cssText='font-size:10px;color:var(--muted);margin-right:2px;white-space:nowrap;opacity:0.7;cursor:pointer;';row.appendChild(lbl);var isOther=ck==='other';var otherWrap=null;if(isOther){otherWrap=document.createElement('span');otherWrap.style.cssText='display:none;';row.appendChild(otherWrap);lbl.textContent='🏷 其他('+cat.tags.length+') ▸';lbl.onclick=function(){var s=otherWrap.style.display==='none';otherWrap.style.display=s?'':'none';lbl.textContent='🏷 其他('+cat.tags.length+') '+(s?'▾':'▸');};}cat.tags.forEach(function(g){var ia=akwSet.indexOf(g.toLowerCase())!==-1;var c=mkChip(g,g,ia);c.setAttribute('data-cat',ck);(isOther&&otherWrap?otherWrap:row).appendChild(c);});bar.appendChild(row);});
+      bar.addEventListener('click',function(e){if(e.target.id==='chip-rss-btn')return;if(e.target.tagName!=='SPAN')return;var f=e.target.getAttribute('data-filter');if(f===undefined||f===null)return;if(f===''){var ha=false;bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')ha=true;});bar.querySelectorAll('span:not(#chip-rss-btn)').forEach(function(c){c.style.background='var(--bg)';c.style.color='';c.style.borderColor='var(--line)';});e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';updateRSSFilterTags([]);if(ha){var ke=document.getElementById('search-keyword');if(ke)ke.value='';var fm=document.getElementById('search-form');if(fm)fm.submit();}}else{var ia=e.target.style.background==='var(--accent)'||e.target.style.background==='rgb(59,130,246)';if(ia){e.target.style.background='var(--bg)';e.target.style.color='';e.target.style.borderColor='var(--line)';}else{e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';}var ac=bar.querySelector('span[data-filter=""]');if(ac){ac.style.background='var(--bg)';ac.style.color='';ac.style.borderColor='var(--line)';}var act=[];bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')act.push(c.getAttribute('data-filter'));});if(!act.length&&ac){ac.style.background='var(--accent)';ac.style.color='#fff';ac.style.borderColor='var(--accent)';}updateRSSFilterTags(act);}});
+      container.insertBefore(bar,table);
+    }
+
+    </script>
 
     <!-- discover page (TMDB) -->
     {{if eq .Page "discover"}}
@@ -2791,29 +2860,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         sessionStorage.removeItem('pan-fetcher-query');
         location.href='/search';
       }
-      function toggleSubForm(){
-        var el=document.getElementById('sub-form');
-        if(el.style.display==='none'){
-          el.style.display='block';
-          // Auto-fill keyword into filter field
-          var kw=document.getElementById('search-keyword');
-          var sf=document.getElementById('sub-filter');
-          if(kw&&sf&&kw.value.trim())sf.value=kw.value.trim();
-        }else{
-          el.style.display='none';
-        }
-      }
-      // Client-side keyword filter for search results
-      function filterResults(){
-        var kw=(document.getElementById('search-keyword')||{}).value||'';
-        var rows=document.querySelectorAll('#search-results tbody tr');
-        if(!rows.length)return;
-        kw=kw.toLowerCase();
-        rows.forEach(function(r){
-          var title=(r.getAttribute('data-title')||'').toLowerCase();
-          r.style.display=(!kw||title.indexOf(kw)>=0)?'':'none';
-        });
-      }
       var pendingMagnet='';
 
       // Note: searchTotal, pageSize, currentPage, totalPages, searchDone
@@ -2823,7 +2869,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         var num=pageStart+idx+1;
         var title=item.page_url?'<a href="'+item.page_url+'" target="_blank">'+(item.title||'')+'</a>':(item.title||'');
         var magnetBtn=item.magnet_url?'<button data-magnet="'+item.magnet_url.replace(/&/g,'&amp;').replace(/"/g,'&quot;')+'" onclick="addTaskWithBrowse(this.getAttribute(\'data-magnet\'))" style="background:var(--accent-2);padding:2px 8px;font-size:11px;margin:0;">+</button>':'';
-        return '<tr data-title="'+(item.title||'')+'"><td class="muted" style="font-size:11px;text-align:center;">'+num+'</td><td>'+title+'</td><td class="muted">'+(item.size||'-')+'</td><td>'+(item.seeders||0)+'</td><td class="muted" style="font-size:11px;">'+(item.date||'')+'</td><td class="muted">'+(item.indexer||'')+'</td><td>'+magnetBtn+'</td></tr>';
+        return '<tr data-title="'+(item.title||'')+'" data-group="'+(item.group||'')+'"><td class="muted" style="font-size:11px;text-align:center;">'+num+'</td><td>'+title+'</td><td class="muted">'+(item.size||'-')+'</td><td>'+(item.seeders||0)+'</td><td class="muted" style="font-size:11px;">'+(item.date||'')+'</td><td class="muted">'+(item.indexer||'')+'</td><td>'+magnetBtn+'</td></tr>';
       }
 
       function renderPagination(){
@@ -2867,6 +2913,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var pageStart=(page-1)*pageSize;
           tbody.innerHTML=j.results.map(function(item,i){return buildRowHTML(item,i,pageStart);}).join('');
           currentPage=page;
+          buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),fd.get('q')||'',fd.get('category')||'');
           renderPagination();
           sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
           var form2=document.getElementById('search-form');
@@ -3550,6 +3597,33 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
   </div><!-- /.main -->
 
+  <!-- RSS subscription modal -->
+  <div id="sub-form" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:998;align-items:center;justify-content:center;" onclick="if(event.target===this)document.getElementById('sub-form').style.display='none'">
+    <div style="background:#fff;border-radius:16px;padding:24px;width:92%;max-width:600px;max-height:85vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.2);" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;">📌 添加 RSS 订阅</h3>
+        <button onclick="document.getElementById('sub-form').style.display='none'" style="background:none;border:none;font-size:20px;cursor:pointer;padding:0;color:var(--muted);">×</button>
+      </div>
+      <form action="/search/subscribe" method="post">
+        <input type="hidden" name="query" id="sub-query"><input type="hidden" name="category" id="sub-category">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <div style="flex:2;min-width:120px;"><label style="font-size:12px;">名称</label><input name="name" id="sub-name" style="font-size:13px;"></div>
+          <div style="flex:2;min-width:160px;"><label style="font-size:12px;">RSS 地址</label><input name="url" id="sub-url" style="font-size:13px;"></div>
+          <div style="flex:1;min-width:110px;"><label style="font-size:12px;">115 目录 ID (可选)</label><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;"></div>
+          <div style="flex:1;min-width:90px;"><label style="font-size:12px;">子目录 (可选)</label><input name="savepath" placeholder="savepath" style="font-size:13px;"></div>
+        </div>
+        <div style="margin-top:8px;">
+          <label style="font-size:12px;">标签（点击下方分组添加）</label>
+          <div id="sub-filter-tags" style="display:flex;flex-wrap:wrap;gap:4px;min-height:28px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);font-size:12px;color:var(--muted);">未选择</div>
+          <textarea name="filter" id="sub-filter" rows="2" placeholder="每行一个关键词" style="display:none;"></textarea>
+        </div>
+        <div style="margin-top:10px;text-align:right;">
+          <button type="submit" style="margin-top:0;background:var(--accent-2);">添加订阅</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- global modal -->
   <div id="g-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999;align-items:center;justify-content:center;" onclick="if(event.target===this)closeModal()">
     <div style="background:#fff;border-radius:12px;padding:20px;min-width:300px;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.15);" onclick="event.stopPropagation()">
@@ -4155,7 +4229,7 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 			Category: category,
 			Sort:     sortBy,
 			Indexers: localIndexers,
-			Limit:    100,
+			Limit:    1000,
 		})
 	}
 
@@ -4169,7 +4243,7 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jackettActiveMu.Unlock()
 		jc := s.jackettConfig()
-		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
+		if jr, err := jackett.Search(jc, q, nil, 1000); err == nil {
 			for _, jr := range jr {
 				if !jackettActiveSet[jr.Tracker] {
 					continue
@@ -4207,6 +4281,9 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// Dedup (same as search)
+	se.Results = dedupSlice(se.Results, nil)
 
 	// Build RSS XML
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
@@ -5159,6 +5236,68 @@ func (s *Server) handleTMDBTrending(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"movies": moviesOut, "tv": tvOut})
 }
 
+func buildAllTagsJSON(results []indexer.SearchResult) template.JS {
+	re := regexp.MustCompile(`[\[【]([^\]】]{1,40})[\]】]`)
+	seen := make(map[string]bool)
+	var tags []string
+	for _, r := range results {
+		matches := re.FindAllStringSubmatch(r.Title, -1)
+		for _, m := range matches {
+			tag := strings.TrimSpace(m[1])
+			tag = strings.ReplaceAll(tag, "DBD制作组", "DBD-Raws")
+			tag = strings.ReplaceAll(tag, "桜都字幕組", "桜都字幕组")
+			if tag == "" || len(tag) > 40 { continue }
+			if regexp.MustCompile(`^\d+\(\d+\)$`).MatchString(tag) { continue }
+			if regexp.MustCompile(`^\d{1,4}$`).MatchString(tag) { continue }
+			lk := strings.ToLower(tag)
+			if !seen[lk] { seen[lk] = true; tags = append(tags, tag) }
+		}
+	}
+	b, _ := json.Marshal(tags)
+	return template.JS(b)
+}
+
+// isValidGroup checks if a first-bracket tag looks like a fansub group name
+func isValidGroup(g string) bool {
+	g = strings.TrimSpace(g)
+	if g == "" || len(g) > 40 { return false }
+	// Reject noise: episode ranges, labels, anime titles
+	noise := []string{
+		"合集", "全集", "总集", "新番", "特别篇", "前篇", "后篇", "番外",
+		"剧场版", "第", "OVA", "OAD",
+	}
+	for _, n := range noise {
+		if strings.Contains(g, n) { return false }
+	}
+	// Reject if starts with digit (episode range like "01-24TV全集")
+	if len(g) > 0 && g[0] >= '0' && g[0] <= '9' { return false }
+	// Accept if: has CJK, or "&", or "-Raws" suffix, or known Latin group
+	hasCJK := false
+	for _, r := range g {
+		if r >= 0x4E00 && r <= 0x9FFF { hasCJK = true; break }
+		if r >= 0x3040 && r <= 0x30FF { hasCJK = true; break }
+	}
+	if hasCJK { return true }
+	if strings.Contains(g, "&") { return true }
+	if strings.HasSuffix(strings.ToLower(g), "-raws") { return true }
+	// Known Latin group patterns
+	known := []string{"DBD", "VCB", "ANK", "Moozzi2", "ReinForce", "Beatrice",
+		"Snow", "LowPower", "U3-Project", "AI-Raws", "NC-Raws", "Lilith",
+		"GJ.Y", "c.c", "MCE", "7³", "ANi", "Porter"}
+	for _, k := range known {
+		if strings.HasPrefix(g, k) { return true }
+	}
+	// Short ASCII name (2-10 chars, starts with uppercase) = likely a group
+	if len(g) >= 2 && len(g) <= 10 && g[0] >= 'A' && g[0] <= 'Z' {
+		allASCII := true
+		for _, r := range g {
+			if r > 127 { allASCII = false; break }
+		}
+		if allASCII { return true }
+	}
+	return false
+}
+
 func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	since := r.URL.Query().Get("since")
@@ -5648,6 +5787,9 @@ func doRestart() {
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")
 	data.Page = "discover"
+	ws := s.loadWebSettings()
+	data.PageSize = ws.PageSize
+	if data.PageSize <= 0 { data.PageSize = 50 }
 	dashboardTemplate.Execute(w, data)
 }
 
@@ -5760,7 +5902,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 						Category: category,
 						Sort:     sortBy,
 						Indexers: localIndexers,
-						Limit:    500,
+						Limit:    2000,
 					})
 				} else {
 					sr.local = indexer.SearchAllErrors{Errors: make(map[string]string)}
@@ -5854,6 +5996,35 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		searchCacheMu.Lock()
 		searchCache = dedupSlice(se.Results, nil)
+		// Extract group from first [...] or 【...】 in title (with validation)
+		groupRe := regexp.MustCompile(`^[[【]([^\]】]{1,40})[\]】]`)
+		for i := range searchCache {
+			if searchCache[i].Group == "" {
+				if m := groupRe.FindStringSubmatch(searchCache[i].Title); m != nil {
+					g := strings.TrimSpace(m[1])
+					if isValidGroup(g) { searchCache[i].Group = g }
+				}
+			}
+		}
+		// Keyword filter
+		if kw := strings.TrimSpace(keyword); kw != "" {
+			kws := strings.Fields(kw)
+			filtered := make([]indexer.SearchResult, 0, len(searchCache))
+			for _, r := range searchCache {
+				titleLower := strings.ToLower(r.Title)
+				match := true
+				for _, k := range kws {
+					if !strings.Contains(titleLower, strings.ToLower(k)) {
+						match = false
+						break
+					}
+				}
+				if match {
+					filtered = append(filtered, r)
+				}
+			}
+			searchCache = filtered
+		}
 		searchCtx = searchContext{
 			Query:    q,
 			Category: category,
@@ -5864,11 +6035,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		searchCacheMu.Unlock()
 		data.PageSize = pageSize
-		data.SearchTotal = len(se.Results)
-		if len(se.Results) > pageSize {
-			data.SearchResults = se.Results[:pageSize]
+		data.SearchTotal = len(searchCache)
+		// Build all-tags JSON from full searchCache (after dedup & keyword filter)
+		data.AllTagsJSON = buildAllTagsJSON(searchCache)
+		if len(searchCache) > pageSize {
+			data.SearchResults = searchCache[:pageSize]
 		} else {
-			data.SearchResults = se.Results
+			data.SearchResults = searchCache
 		}
 		// Auto-build RSS URL for subscription (local aggregated feed)
 		if q != "" {
@@ -5897,6 +6070,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 		Seeders     int    `json:"seeders"`
 		IndexerName string `json:"indexer"`
 		DateFmt     string `json:"date"`
+		Group       string `json:"group,omitempty"`
 	}
 
 	searchCacheMu.Lock()
@@ -5926,6 +6100,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 			SizeFmt:     formatSize(r.Size),
 			Seeders:     r.Seeders,
 			IndexerName: r.IndexerName,
+			Group:       r.Group,
 		}
 		if r.DateFmt != "" {
 			item.DateFmt = r.DateFmt
@@ -5967,7 +6142,7 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 			Category: ctx.Category,
 			Sort:     ctx.Sort,
 			Indexers: localIDs,
-			Limit:    500,
+			Limit:    2000,
 			Page:     ctx.NextPage,
 		}
 		se := s.IdxMgr.SearchAllWithErrors(req)
@@ -7079,6 +7254,9 @@ func (s *Server) pageDataWithCache(page, message, errMsg string) dashboardData {
 		Lang:    lang,
 		T:       langMap(lang),
 	}
+	ws := s.loadWebSettings()
+	data.PageSize = ws.PageSize
+	if data.PageSize <= 0 { data.PageSize = 50 }
 	if s.Agent != nil {
 		// Cache connection check for 60 seconds
 		if time.Since(s.connCheckTime) < 60*time.Second {

@@ -19,14 +19,25 @@ type TMDBClient struct {
 
 // TMDBResult is a search or detail result from TMDB.
 type TMDBResult struct {
-	TMDBID     int      `json:"id"`
-	Title      string   `json:"title"`  // movie
-	Name       string   `json:"name"`   // tv
-	MediaType  string   `json:"media_type"`
+	TMDBID        int      `json:"id"`
+	Title         string   `json:"title"`
+	OriginalTitle string   `json:"original_title"`
+	Name          string   `json:"name"`
+	OriginalName  string   `json:"original_name"`
+	MediaType     string   `json:"media_type"`
 	Year       string   `json:"release_date"`
 	FirstAir   string   `json:"first_air_date"`
 	Overview   string   `json:"overview"`
 	PosterPath string   `json:"poster_path"`
+	Backdrop   string   `json:"backdrop_path"`
+	VoteAvg    float64  `json:"vote_average"`
+	VoteCount  int      `json:"vote_count"`
+	Runtime    int      `json:"runtime"`
+	NumSeasons int      `json:"number_of_seasons"`
+	NumEps     int      `json:"number_of_episodes"`
+	Status     string   `json:"status"`
+	Tagline    string   `json:"tagline"`
+	Homepage   string   `json:"homepage"`
 	AltTitles  []string `json:"-"` // populated from alternative_titles
 	Seasons    []TMDBSeason `json:"seasons,omitempty"`
 	Genres     []TMDBGenre  `json:"genres,omitempty"`
@@ -58,6 +69,17 @@ func (r *TMDBResult) YearStr() string {
 		return date[:4]
 	}
 	return ""
+}
+
+// SearchKeyword returns the best keyword for aggregator search (prefers original title).
+func (r *TMDBResult) SearchKeyword() string {
+	if r.OriginalTitle != "" && r.OriginalTitle != r.Title {
+		return r.OriginalTitle
+	}
+	if r.OriginalName != "" && r.OriginalName != r.Name {
+		return r.OriginalName
+	}
+	return r.DisplayName()
 }
 
 // EpisodeCount returns total episode count across all seasons.
@@ -218,6 +240,45 @@ func (c *TMDBClient) fillDetails(result *TMDBResult) {
 	result.Genres = detail.Genres
 	result.FirstAir = detail.FirstAir
 	result.Overview = detail.Overview
+}
+
+// BackdropURL returns the full backdrop image URL (w780 size).
+func (r *TMDBResult) BackdropURL() string {
+	if r.Backdrop == "" {
+		return ""
+	}
+	return "https://image.tmdb.org/t/p/w780" + r.Backdrop
+}
+
+// GetDetail fetches full details for a movie or TV show.
+func (c *TMDBClient) GetDetail(tmdbID int, mediaType string) (*TMDBResult, error) {
+	if c == nil || c.apiKey == "" {
+		return nil, fmt.Errorf("TMDB API key not configured")
+	}
+	params := url.Values{}
+	params.Set("api_key", c.apiKey)
+	params.Set("language", "zh-CN")
+
+	var detailURL string
+	if mediaType == "tv" {
+		detailURL = fmt.Sprintf("https://api.themoviedb.org/3/tv/%d?%s", tmdbID, params.Encode())
+	} else {
+		detailURL = fmt.Sprintf("https://api.themoviedb.org/3/movie/%d?%s", tmdbID, params.Encode())
+	}
+
+	resp, err := c.http.Get(detailURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var detail TMDBResult
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, err
+	}
+	detail.MediaType = mediaType
+	detail.TMDBID = tmdbID
+	return &detail, nil
 }
 
 // BestMatch searches TMDB and returns the best matching title and its TMDB ID.

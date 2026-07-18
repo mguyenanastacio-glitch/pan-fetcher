@@ -18,6 +18,7 @@ type SearchResult struct {
 	IndexerName string    `json:"indexer_name"`
 	InfoHash    string    `json:"info_hash,omitempty"`
 	PageURL     string    `json:"page_url,omitempty"`
+	Group       string    `json:"group,omitempty"` // fansub group from first [...] tag
 }
 
 // SearchRequest is the input for a search operation.
