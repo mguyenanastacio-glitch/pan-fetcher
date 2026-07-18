@@ -165,7 +165,6 @@ type dashboardData struct {
 	SearchErrors  map[string]string
 	AllTagsJSON   template.JS // JSON of all unique tags from full search results
 	AllGroupsJSON template.JS // JSON of all validated group names from full search results
-	SearchCategory string
 	SearchSort     string
 	SearchIndexers []string
 	RssURL         string
@@ -225,7 +224,6 @@ const searchCacheFile = "search-cache.json"
 
 type persistedSearch struct {
 	Query     string                 `json:"query"`
-	Category  string                 `json:"category"`
 	Sort      string                 `json:"sort"`
 	Indexers  []string               `json:"indexers"`
 	Keyword   string                 `json:"keyword"`
@@ -238,7 +236,6 @@ func saveSearchCache() {
 	defer searchCacheMu.Unlock()
 	ps := persistedSearch{
 		Query:    searchCtx.Query,
-		Category: searchCtx.Category,
 		Sort:     searchCtx.Sort,
 		Indexers: searchCtx.Indexers,
 		Keyword:  filterKeyword,
@@ -268,7 +265,6 @@ func loadSearchCache() *persistedSearch {
 	filterKeyword = ps.Keyword
 	searchCtx = searchContext{
 		Query:    ps.Query,
-		Category: ps.Category,
 		Sort:     ps.Sort,
 		Indexers: ps.Indexers,
 		NextPage: 2,
@@ -280,7 +276,6 @@ func loadSearchCache() *persistedSearch {
 
 type searchContext struct {
 	Query     string
-	Category  string
 	Sort      string
 	Indexers  []string // includes "jackett:xxx" prefixed
 	NextPage  int      // next page to fetch (2, 3, ...)
@@ -2441,14 +2436,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <input name="q" id="search-q" placeholder="{{index .T "search_ph"}}" value="{{.SearchQuery}}" style="flex:3;min-width:160px;" autofocus>
           <input type="hidden" name="keyword" id="search-keyword" value="{{.SearchKeyword}}">
-          <select name="category" style="flex:1;min-width:100px;">
-            <option value="">{{index .T "all_categories"}}</option>
-            <option value="anime"{{if eq .SearchCategory "anime"}} selected{{end}}>{{index .T "category_anime"}}</option>
-            <option value="tv"{{if eq .SearchCategory "tv"}} selected{{end}}>{{index .T "category_tv"}}</option>
-            <option value="movie"{{if eq .SearchCategory "movie"}} selected{{end}}>{{index .T "category_movie"}}</option>
-            <option value="music"{{if eq .SearchCategory "music"}} selected{{end}}>{{index .T "category_music"}}</option>
-            <option value="other"{{if eq .SearchCategory "other"}} selected{{end}}>{{index .T "category_other"}}</option>
-          </select>
           <select name="sort" style="flex:1;min-width:100px;">
             <option value="seeds"{{if eq .SearchSort "seeds"}} selected{{end}}>{{index .T "sort_seeds"}}</option>
             <option value="size"{{if eq .SearchSort "size"}} selected{{end}}>{{index .T "sort_size"}}</option>
@@ -2482,7 +2469,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       {{else}}{{if .SearchQuery}}<div class="hint" style="margin-top:12px;">{{index .T "search_no_result"}}</div>{{end}}{{end}}
       {{if .SearchErrors}}{{range $id, $err := .SearchErrors}}<div style="padding:4px 8px;margin:2px 0;background:#fef2f2;color:#991b1b;border-radius:6px;word-break:break-all;">⚠ {{$err}}</div>{{end}}{{end}}
       <!-- saved searches -->
-      {{if .SavedSearches}}<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);"><h3 style="margin:0 0 8px;">{{index .T "saved_searches_title"}}</h3>{{range .SavedSearches}}<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><span style="flex:1;">🔍 {{.Query}}{{if .Category}} <span style="color:var(--muted);font-size:11px;">[{{.Category}}]</span>{{end}}</span><form action="/search" method="post" style="display:inline;"><input type="hidden" name="q" value="{{.Query}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="sort" value="{{.Sort}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">{{index $.T "search_btn_sm"}}</button></form><form action="/search" method="post" style="display:inline;"><input type="hidden" name="action" value="unsubscribe"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">{{index $.T "delete_btn"}}</button></form></div>{{end}}</div>{{end}}
+      {{if .SavedSearches}}<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);"><h3 style="margin:0 0 8px;">{{index .T "saved_searches_title"}}</h3>{{range .SavedSearches}}<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;"><span style="flex:1;">🔍 {{.Query}}</span><form action="/search" method="post" style="display:inline;"><input type="hidden" name="q" value="{{.Query}}"><input type="hidden" name="sort" value="{{.Sort}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;">{{index $.T "search_btn_sm"}}</button></form><form action="/search" method="post" style="display:inline;"><input type="hidden" name="action" value="unsubscribe"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" style="padding:2px 8px;font-size:11px;margin:0;background:var(--danger);">{{index $.T "delete_btn"}}</button></form></div>{{end}}</div>{{end}}
     </div>
     <script>
     document.getElementById('search-form').addEventListener('submit',function(e){
@@ -2508,7 +2495,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
       sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
-      setTimeout(function(){buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),'{{.SearchQuery}}','{{.SearchCategory}}');},0);
+      setTimeout(function(){buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),'{{.SearchQuery}}');},0);
       {{else}}
       var savedQuery=sessionStorage.getItem('pan-fetcher-query');
       var savedPage=sessionStorage.getItem(pgKey);
@@ -2558,7 +2545,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         // Rebuild chip bar with filtered tags
         if(j.all_tags)window._currentAllTags=j.all_tags;
         if(j.all_groups)window._currentAllGroups=j.all_groups;
-        buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),document.getElementById('search-q')?.value||'',document.querySelector('select[name="category"]')?.value||'');
+        buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),document.getElementById('search-q')?.value||'');
         document.getElementById('search-results').scrollIntoView({block:'start'});
       }catch(e){console.error(e);}
     }
@@ -2600,7 +2587,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     window._currentAllTags={{if .AllTagsJSON}}{{.AllTagsJSON}}{{else}}[]{{end}};
     window._currentAllGroups={{if .AllGroupsJSON}}{{.AllGroupsJSON}}{{else}}[]{{end}};
 
-    function buildGroupChips(container,table,rssQuery,rssCategory){
+    function buildGroupChips(container,table,rssQuery){
       var allGroups=window._currentAllGroups||[];
       window._serverGroups={};
       if(allGroups&&allGroups.length){
@@ -2616,17 +2603,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       var old=container.querySelector('#group-chip-bar');if(old)old.remove();
       if(!table.querySelectorAll('tbody tr').length&&!allTags.length)return;
-      renderChipBar(container,table,groups,null,rssQuery,rssCategory);
+      renderChipBar(container,table,groups,null,rssQuery);
     }
 
-    function renderChipBar(container,table,groups,catMap,rssQuery,rssCategory){
+    function renderChipBar(container,table,groups,catMap,rssQuery){
       var bar=document.createElement('div');bar.id='group-chip-bar';bar.style.cssText='display:flex;flex-direction:column;gap:5px;margin-bottom:10px;';
       var kwEl=document.getElementById('search-keyword');var hasKw=kwEl&&kwEl.value.trim()!=='';var akw=kwEl?kwEl.value.trim().toLowerCase():'';var akwSet=[];if(akw){var ps=akw.split(/\s+/);ps.forEach(function(p){var ci=p.indexOf(':');if(ci>0){p.substring(ci+1).split('|').forEach(function(t){akwSet.push(t);});}else{akwSet.push(p);}});}
       if(hasKw){activeRSSFilters=kwEl.value.trim().split(/[\s,]+/).filter(Boolean);updateRSSFilterTags(activeRSSFilters);}
       function mkChip(t,f,isA){var c=document.createElement('span');c.textContent=t;c.setAttribute('data-filter',f);c.style.cssText='padding:3px 10px;border-radius:12px;font-size:11px;white-space:nowrap;cursor:pointer;background:'+(isA?'var(--accent)':'var(--bg)')+';color:'+(isA?'#fff':'')+';border:1px solid '+(isA?'var(--accent)':'var(--line)');return c;}
       var top=document.createElement('div');top.style.cssText='display:flex;flex-wrap:wrap;gap:6px;align-items:center;';top.appendChild(mkChip('全部','',!hasKw));
       var rss=document.createElement('span');rss.textContent='+ RSS';rss.id='chip-rss-btn';rss.style.cssText='padding:4px 14px;border-radius:14px;background:var(--accent-2);color:#fff;cursor:pointer;font-size:12px;margin-left:auto;';
-      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-category').value=rssCategory||'';document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);if(rssCategory)u+='&category='+encodeURIComponent(rssCategory);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=buildGroupKeyword();if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;sf.style.display='flex';}};
+      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=buildGroupKeyword();if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;sf.style.display='flex';}};
       top.appendChild(rss);bar.appendChild(top);
       var cats={},co=[],cl={group:'👥 字幕组',source:'📡 来源',codec:'🎞 编码',resolution:'📐 分辨率',language:'🌐 语言',container:'📦 容器',season:'📅 季',other:'🏷 其他'};
       groups.forEach(function(g){var ck;if(catMap&&catMap[g])ck=catMap[g];else{var cl2=classifyTag(g);if(!cl2)return;ck=cl2.cat;}if(!cats[ck]){cats[ck]={label:cl[ck]||('🏷 '+ck),tags:[],key:ck};co.push(ck);}cats[ck].tags.push(g);});
@@ -2930,20 +2917,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       if(!detailData)return;
       var query=detailData.title;
       if(detailData.media_type==='tv'&&detailSeason>0)query+=' S'+String(detailSeason).padStart(2,'0');
-      goSearch(query,detailData.media_type==='movie'?'movie':'tv',false);
+      goSearch(query,false);
     }
 
     function detailSubscribe(){
       if(!detailData)return;
       var query=detailData.title;
       if(detailData.media_type==='tv'&&detailSeason>0)query+=' S'+String(detailSeason).padStart(2,'0');
-      goSearch(query,detailData.media_type==='movie'?'movie':'tv',true);
+      goSearch(query,true);
     }
 
-    function goSearch(query,category,subscribe){
+    function goSearch(query,subscribe){
       var form=document.createElement('form');form.method='POST';form.action='/search';
       var inp=document.createElement('input');inp.type='hidden';inp.name='q';inp.value=query;form.appendChild(inp);
-      var cat=document.createElement('input');cat.type='hidden';cat.name='category';cat.value=category;form.appendChild(cat);
       if(subscribe){var s=document.createElement('input');s.type='hidden';s.name='subscribe';s.value='1';form.appendChild(s);}
       document.body.appendChild(form);form.submit();
     }
@@ -2956,13 +2942,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var query=selectedItem?selectedItem.title:document.getElementById('tmdb-query').value.trim();
       if(selectedItem&&selectedItem.media_type==='tv'&&selectedSeason>0)query+=' S'+String(selectedSeason).padStart(2,'0');
       var cat=selectedItem?(selectedItem.media_type==='movie'?'movie':'tv'):'';
-      goSearch(query,cat,false);
+      goSearch(query,false);
     }
     function doAggregatedSearchRSS(){
       var query=selectedItem?selectedItem.title:document.getElementById('tmdb-query').value.trim();
       if(selectedItem&&selectedItem.media_type==='tv'&&selectedSeason>0)query+=' S'+String(selectedSeason).padStart(2,'0');
-      var cat=selectedItem?(selectedItem.media_type==='movie'?'movie':'tv'):'';
-      goSearch(query,cat,true);
+      goSearch(query,true);
     }
 
     // --- Trending ---
@@ -3146,7 +3131,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           currentPage=page;
           searchTotal=j.total||0;
           totalPages=searchTotal>0?Math.ceil(searchTotal/pageSize):1;
-          buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),fd.get('q')||'',fd.get('category')||'');
+          buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),fd.get('q')||'');
           renderPagination();
           sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
           var form2=document.getElementById('search-form');
@@ -3838,7 +3823,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <button onclick="document.getElementById('sub-form').style.display='none'" style="background:none;border:none;font-size:20px;cursor:pointer;padding:0;color:var(--muted);">×</button>
       </div>
       <form action="/search/subscribe" method="post">
-        <input type="hidden" name="query" id="sub-query"><input type="hidden" name="category" id="sub-category">
+        <input type="hidden" name="query" id="sub-query">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <div style="flex:2;min-width:120px;"><label style="font-size:12px;">名称</label><input name="name" id="sub-name" style="font-size:13px;"></div>
           <div style="flex:2;min-width:160px;"><label style="font-size:12px;">RSS 地址</label><input name="url" id="sub-url" style="font-size:13px;"></div>
@@ -4442,7 +4427,6 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	category := strings.TrimSpace(r.URL.Query().Get("category"))
 	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
 	if sortBy == "" {
 		sortBy = "date"
@@ -4464,7 +4448,6 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 	} else {
 		se = s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
 			Query:    q,
-			Category: category,
 			Sort:     sortBy,
 			Indexers: localIndexers,
 			Limit:    1000,
@@ -6209,7 +6192,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if ps := loadSearchCache(); ps != nil {
 			data.SearchQuery = ps.Query
 			data.SearchKeyword = ps.Keyword
-			data.SearchCategory = ps.Category
 			data.SearchSort = ps.Sort
 			data.SearchIndexers = ps.Indexers
 			data.PageSize = ps.PageSize
@@ -6223,7 +6205,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				data.SearchResults = searchCache
 			}
 			if ps.Query != "" {
-				data.RssURL = buildRssURL(s.Port, ps.Query, ps.Indexers, ps.Category)
+				data.RssURL = buildRssURL(s.Port, ps.Query, ps.Indexers)
 			}
 		}
 	}
@@ -6284,7 +6266,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Parse filters
-		category := strings.TrimSpace(r.FormValue("category"))
 		sortBy := strings.TrimSpace(r.FormValue("sort"))
 		keyword := strings.TrimSpace(r.FormValue("keyword"))
 		if sortBy == "" {
@@ -6330,7 +6311,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				if !(len(indexers) > 0 && len(localIndexers) == 0 && hasJackettSelection) {
 					sr.local = s.IdxMgr.SearchAllWithErrors(indexer.SearchRequest{
 						Query:    q,
-						Category: category,
 						Sort:     sortBy,
 						Indexers: localIndexers,
 						Limit:    2000,
@@ -6408,7 +6388,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		data.SearchQuery = q
 		data.SearchKeyword = keyword
-		data.SearchCategory = category
+
 		data.SearchSort = sortBy
 		data.SearchIndexers = indexers
 		data.SearchErrors = se.Errors
@@ -6442,7 +6422,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		filterKeyword = keyword
 		searchCtx = searchContext{
 			Query:    q,
-			Category: category,
 			Sort:     sortBy,
 			Indexers: indexers,
 			NextPage: 2,
@@ -6461,7 +6440,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Auto-build RSS URL for subscription (local aggregated feed)
 		if q != "" {
-			data.RssURL = buildRssURL(s.Port, q, indexers, category)
+			data.RssURL = buildRssURL(s.Port, q, indexers)
 		}
 		// Persist search results for next page load
 		saveSearchCache()
@@ -6579,7 +6558,6 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 	if len(ctx.Indexers) == 0 || len(localIDs) > 0 || !hasJackett {
 		req := indexer.SearchRequest{
 			Query:    ctx.Query,
-			Category: ctx.Category,
 			Sort:     ctx.Sort,
 			Indexers: localIDs,
 			Limit:    2000,
@@ -6704,7 +6682,6 @@ type savedSearch struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Query     string `json:"query"`
-	Category  string `json:"category"`
 	Sort      string `json:"sort"`
 	CreatedAt string `json:"created_at"`
 }
@@ -6741,8 +6718,7 @@ func (s *Server) handleSearchSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	if rssURL == "" && q != "" {
 		// Auto-build local aggregated RSS URL
-		cat := strings.TrimSpace(r.FormValue("category"))
-		rssURL = buildRssURL(s.Port, q, nil, cat)
+		rssURL = buildRssURL(s.Port, q, nil)
 	}
 	if rssURL == "" {
 		data := s.pageData("", tr(s.langFromAgent(), "please_fill_rss"))
@@ -6763,14 +6739,11 @@ func (s *Server) handleSearchSubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildRssURL constructs a local aggregated RSS feed URL from search parameters.
-func buildRssURL(port int, query string, indexers []string, category string) string {
+func buildRssURL(port int, query string, indexers []string) string {
 	v := url.Values{}
 	v.Set("q", query)
 	if len(indexers) > 0 {
 		v.Set("indexers", strings.Join(indexers, ","))
-	}
-	if category != "" {
-		v.Set("category", category)
 	}
 	v.Set("sort", "date")
 	return fmt.Sprintf("http://127.0.0.1:%d/rss/search?%s", port, v.Encode())

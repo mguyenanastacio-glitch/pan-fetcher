@@ -23,14 +23,13 @@ type SearchResult struct {
 
 // SearchRequest is the input for a search operation.
 type SearchRequest struct {
-	Query     string
-	Season    int
-	Episode   int
-	Category  string
-	Sort      string   // "seeds" (default), "size", "date"
-	Indexers  []string // specific indexer IDs to search (empty = all enabled)
-	Limit     int
-	Page      int      // page number (1-based), 0 = first page
+	Query    string
+	Season   int
+	Episode  int
+	Sort     string   // "seeds" (default), "size", "date"
+	Indexers []string // specific indexer IDs to search (empty = all enabled)
+	Limit    int
+	Page     int      // page number (1-based), 0 = first page
 }
 
 // IndexerInfo is the runtime info for a configured indexer.
