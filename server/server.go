@@ -2675,8 +2675,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       .back-to-top:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.2);}
       .back-to-top.show{display:flex;}
       /* detail modal */
-      .detail-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease;}
-      .detail-card{position:relative;width:min(780px,94vw);max-height:88vh;background:var(--card);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);}
+      .detail-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.75);overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:24px 0;animation:fadeIn .2s ease;}
+      .detail-card{position:relative;width:min(780px,94vw);background:var(--card);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);margin:0 auto;}
       .detail-close{position:absolute;top:12px;right:12px;z-index:10;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.45);color:#fff;border:none;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.2s;}
       .detail-close:hover{background:rgba(0,0,0,.7);}
       .detail-backdrop-wrap{position:relative;width:100%;height:200px;overflow:hidden;flex-shrink:0;background:linear-gradient(135deg,#1e293b,#0f172a);}
@@ -2693,7 +2693,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       .detail-meta span{display:inline-flex;align-items:center;gap:4px;}
       .detail-genres{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
       .detail-genre-chip{padding:3px 12px;border-radius:14px;font-size:11px;background:var(--bg);border:1px solid var(--line);color:var(--muted);}
-      .detail-overview{font-size:13.5px;line-height:1.65;color:var(--text);margin-bottom:12px;max-height:120px;overflow-y:auto;}
+      .detail-overview{font-size:13.5px;line-height:1.65;color:var(--text);margin-bottom:12px;}
       .detail-season-wrap{margin:10px 0;}
       .detail-season-wrap label{font-size:13px;color:var(--muted);display:block;margin-bottom:6px;}
       .detail-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;}
@@ -2869,7 +2869,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       fillDetailCard(d);
       document.querySelector('.detail-actions').style.display='none';
       document.getElementById('detail-modal').style.display='flex';
-      document.body.style.overflow='hidden';
     }
 
     function pickSeason(season,el){
@@ -2885,7 +2884,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       document.querySelector('.detail-actions').style.display='';
       detailSeason=season||0;
       document.getElementById('detail-modal').style.display='flex';
-      document.body.style.overflow='hidden';
     }
 
     function fillDetailCard(d){
@@ -2920,7 +2918,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     function closeDetail(){
       document.getElementById('detail-modal').style.display='none';
-      document.body.style.overflow='';
       detailData=null;detailSeason=0;
       document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.remove('selected');});
     }
