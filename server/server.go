@@ -7330,7 +7330,6 @@ func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	}
 	cid := strings.TrimSpace(r.FormValue("cid"))
 	savepath := strings.TrimSpace(r.FormValue("savepath"))
-	filter := strings.TrimSpace(r.FormValue("filter"))
 	// Resolve relative URLs to absolute for local RSS endpoints
 	if strings.HasPrefix(rssURL, "/") {
 		rssURL = fmt.Sprintf("http://127.0.0.1:%d%s", s.Port, rssURL)
