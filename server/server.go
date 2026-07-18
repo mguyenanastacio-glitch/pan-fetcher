@@ -4342,12 +4342,8 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		s.jackettActiveMu.Unlock()
 		jc := s.jackettConfig()
 		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
-			log.Printf("[rss] Jackett returned %d results for q=%q", len(jr), q)
-			var filteredByActive, filteredByIndexer int
 			for _, jr := range jr {
-				// If user explicitly selected indexers, skip active-set check
 				if len(indexers) == 0 && !jackettActiveSet[jr.Tracker] {
-					filteredByActive++
 					continue
 				}
 				if len(indexers) > 0 {
@@ -4360,7 +4356,6 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					if !match {
-						filteredByIndexer++
 						continue
 					}
 				}
@@ -4380,9 +4375,6 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 					IndexerName: "Jackett: " + jr.TrackerName,
 					PublishDate: pubDate,
 				})
-			}
-			if filteredByActive > 0 || filteredByIndexer > 0 {
-				log.Printf("[rss] Jackett filter: %d blocked by active-set, %d blocked by indexer match", filteredByActive, filteredByIndexer)
 			}
 		} else if err != nil {
 			log.Printf("[rss] Jackett search error: %v", err)
