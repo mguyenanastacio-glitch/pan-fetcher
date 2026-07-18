@@ -2674,6 +2674,31 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       .back-to-top{position:fixed;bottom:24px;right:24px;width:44px;height:44px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.15);display:none;align-items:center;justify-content:center;font-size:20px;z-index:100;transition:all .2s;}
       .back-to-top:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.2);}
       .back-to-top.show{display:flex;}
+      /* detail modal */
+      .detail-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease;}
+      .detail-card{position:relative;width:min(780px,94vw);max-height:88vh;background:var(--card);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);}
+      .detail-close{position:absolute;top:12px;right:12px;z-index:10;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.45);color:#fff;border:none;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.2s;}
+      .detail-close:hover{background:rgba(0,0,0,.7);}
+      .detail-backdrop-wrap{position:relative;width:100%;height:200px;overflow:hidden;flex-shrink:0;background:linear-gradient(135deg,#1e293b,#0f172a);}
+      .detail-backdrop-img{width:100%;height:100%;object-fit:cover;opacity:.55;}
+      .detail-body{display:flex;gap:20px;padding:0 24px 24px;margin-top:-60px;position:relative;z-index:2;}
+      .detail-poster-col{flex-shrink:0;}
+      .detail-poster-img{width:130px;height:195px;border-radius:10px;object-fit:cover;box-shadow:0 8px 24px rgba(0,0,0,.3);border:3px solid var(--card);}
+      .detail-poster-placeholder{width:130px;height:195px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:48px;background:linear-gradient(135deg,#374151,#1f2937);border:3px solid var(--card);}
+      .detail-info-col{flex:1;min-width:0;padding-top:60px;}
+      .detail-info-col h2{margin:0 0 4px;font-size:22px;line-height:1.3;}
+      .detail-info-col .detail-orig{font-size:13px;color:var(--muted);margin-bottom:6px;}
+      .detail-tagline{font-size:14px;color:var(--accent);font-style:italic;margin:0 0 10px;}
+      .detail-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-bottom:8px;}
+      .detail-meta span{display:inline-flex;align-items:center;gap:4px;}
+      .detail-genres{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+      .detail-genre-chip{padding:3px 12px;border-radius:14px;font-size:11px;background:var(--bg);border:1px solid var(--line);color:var(--muted);}
+      .detail-overview{font-size:13.5px;line-height:1.65;color:var(--text);margin-bottom:12px;max-height:120px;overflow-y:auto;}
+      .detail-season-wrap{margin:10px 0;}
+      .detail-season-wrap label{font-size:13px;color:var(--muted);display:block;margin-bottom:6px;}
+      .detail-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;}
+      .detail-actions button{padding:10px 22px;font-size:14px;border-radius:10px;}
+      @media(max-width:600px){.detail-body{flex-direction:column;align-items:center;margin-top:-40px;padding:0 16px 16px;}.detail-info-col{padding-top:10px;}.detail-poster-img{width:100px;height:150px;}.detail-backdrop-wrap{height:140px;}}
     </style>
     <div class="discover-hero">
       <h2>🎬 发现</h2>
@@ -2732,9 +2757,42 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         <button onclick="doAggregatedSearchRSS()" style="padding:10px 24px;font-size:14px;background:var(--accent-2);border-radius:10px;">📋 一键订阅</button>
       </div>
     </div>
+
+    <!-- Detail Modal -->
+    <div id="detail-modal" class="detail-overlay" style="display:none;" onclick="if(event.target===this)closeDetail()">
+      <div class="detail-card">
+        <button class="detail-close" onclick="closeDetail()">&times;</button>
+        <div class="detail-backdrop-wrap">
+          <img id="detail-backdrop" class="detail-backdrop-img" src="" alt="">
+        </div>
+        <div class="detail-body">
+          <div class="detail-poster-col">
+            <img id="detail-poster" class="detail-poster-img" src="" alt="" onerror="this.style.display='none';document.getElementById('detail-poster-ph').style.display='flex';">
+            <div id="detail-poster-ph" class="detail-poster-placeholder" style="display:none;">🎬</div>
+          </div>
+          <div class="detail-info-col">
+            <h2 id="detail-title"></h2>
+            <div class="detail-orig" id="detail-orig"></div>
+            <p class="detail-tagline" id="detail-tagline"></p>
+            <div class="detail-meta" id="detail-meta"></div>
+            <div class="detail-genres" id="detail-genres"></div>
+            <p class="detail-overview" id="detail-overview"></p>
+            <div class="detail-season-wrap" id="detail-season-wrap" style="display:none;">
+              <label>📺 选择季：</label>
+              <div class="season-select" id="detail-season-list"></div>
+            </div>
+            <div class="detail-actions">
+              <button onclick="detailGetResources()" style="background:var(--accent);color:#fff;">🚀 获取资源</button>
+              <button onclick="detailSubscribe()" style="background:var(--accent-2);color:#fff;">📋 一键订阅</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script>
     var tmdbMovies=[],tmdbTV=[];
-    var selectedItem=null, selectedSeason=0;
+    var detailData=null, detailSeason=0;
 
     document.getElementById('tmdb-query').addEventListener('keydown',function(e){if(e.key==='Enter')doTMDBSearch();});
 
@@ -2777,61 +2835,135 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }).join('');
     }
 
-    function selectTMDB(mediaType,id){
-      var items=mediaType==='movie'?tmdbMovies:tmdbTV;
-      selectedItem=items.find(function(it){return it.media_type===mediaType&&it.id===id;});
-      if(!selectedItem)return;
+    async function selectTMDB(mediaType,id){
       document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.toggle('selected',c.getAttribute('data-id')==String(id));});
-      if(mediaType==='movie'){
-        showStep('step-confirm');
-        document.getElementById('confirm-title').innerHTML='<img class="sel-poster" src="'+selectedItem.poster+'" onerror="this.style.display=\'none\'">🎬 '+selectedItem.title+' <span style="color:var(--muted);font-weight:400;">('+selectedItem.year+')</span>';
-        document.getElementById('confirm-query').textContent='将搜索: '+selectedItem.title;
-      }else{
-        showStep('step-season');
-        document.getElementById('sel-title').innerHTML='<img class="sel-poster" src="'+selectedItem.poster+'" onerror="this.style.display=\'none\'">📺 '+selectedItem.title+' <span style="color:var(--muted);font-weight:400;">('+selectedItem.year+')</span>';
-        fetchTVSeasons(id);
+      try{
+        var r=await fetch('/api/tmdb/detail?type='+encodeURIComponent(mediaType)+'&id='+id);
+        var d=await r.json();
+        if(d.error){alert('获取详情失败: '+d.error);return;}
+        detailData=d; detailSeason=0;
+        if(mediaType==='movie'){
+          showDetail(d,0);
+        }else{
+          showTVSeasonSelect(d);
+        }
+      }catch(e){alert('请求失败: '+e.message);}
+    }
+
+    function showTVSeasonSelect(d){
+      detailData=d;
+      var wrap=document.getElementById('detail-season-wrap');
+      var list=document.getElementById('detail-season-list');
+      wrap.style.display='block';
+      var seasons=d.seasons||[];
+      var html='<span class="season-chip active" onclick="pickSeason(0,this)">全部 ('+(d.num_episodes||'?')+'集)</span>';
+      for(var i=0;i<seasons.length;i++){
+        var s=seasons[i];
+        html+='<span class="season-chip" onclick="pickSeason('+s.season_number+',this)">第'+s.season_number+'季 ('+s.episode_count+'集)</span>';
       }
+      if(!seasons.length){
+        for(var s=1;s<=(d.num_seasons||1);s++){html+='<span class="season-chip" onclick="pickSeason('+s+',this)">第'+s+'季</span>';}
+      }
+      list.innerHTML=html;
+      detailSeason=0;
+      fillDetailCard(d);
+      document.querySelector('.detail-actions').style.display='none';
+      document.getElementById('detail-modal').style.display='flex';
+      document.body.style.overflow='hidden';
     }
 
-    async function fetchTVSeasons(tmdbId){
-      document.getElementById('season-list').innerHTML='<span style="font-size:12px;color:var(--muted);">加载季信息...</span>';
-      var html='<span class="season-chip active" onclick="selectSeason(0,this)">全部</span>';
-      for(var s=1;s<=12;s++){html+='<span class="season-chip" onclick="selectSeason('+s+',this)">第 '+s+' 季</span>';}
-      document.getElementById('season-list').innerHTML=html;
-      selectedSeason=0;
+    function pickSeason(season,el){
+      detailSeason=season;
+      document.querySelectorAll('#detail-season-list .season-chip').forEach(function(c){c.classList.remove('active');});
+      el.classList.add('active');
+      document.querySelector('.detail-actions').style.display='';
     }
 
-    function selectSeason(season,el){selectedSeason=season;document.querySelectorAll('#season-list .season-chip').forEach(function(c){c.classList.remove('active');});el.classList.add('active');}
-
-    function confirmTVSearch(){
-      var label=selectedItem.title;
-      if(selectedSeason>0)label+=' S'+String(selectedSeason).padStart(2,'0');
-      document.getElementById('confirm-title').innerHTML='<img class="sel-poster" src="'+selectedItem.poster+'" onerror="this.style.display=\'none\'">📺 '+label+' <span style="color:var(--muted);font-weight:400;">('+selectedItem.year+')</span>';
-      document.getElementById('confirm-query').textContent='将搜索: '+label;
-      showStep('step-confirm');
+    function showDetail(d,season){
+      fillDetailCard(d);
+      document.getElementById('detail-season-wrap').style.display='none';
+      document.querySelector('.detail-actions').style.display='';
+      detailSeason=season||0;
+      document.getElementById('detail-modal').style.display='flex';
+      document.body.style.overflow='hidden';
     }
 
-    function backToTMDB(){showStep('step-tmdb');selectedItem=null;selectedSeason=0;document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.remove('selected');});}
+    function fillDetailCard(d){
+      document.getElementById('detail-backdrop').src=d.backdrop||'';
+      var posterImg=document.getElementById('detail-poster');
+      var posterPh=document.getElementById('detail-poster-ph');
+      if(d.poster){posterImg.src=d.poster;posterImg.style.display='';posterPh.style.display='none';}
+      else{posterImg.style.display='none';posterPh.style.display='flex';posterPh.textContent=d.media_type==='movie'?'🎬':'📺';}
+      document.getElementById('detail-title').textContent=d.title+' ('+d.year+')';
+      var orig=document.getElementById('detail-orig');
+      orig.textContent=d.original_title&&d.original_title!==d.title?d.original_title:'';
+      orig.style.display=orig.textContent?'':'none';
+      var tl=document.getElementById('detail-tagline');
+      tl.textContent=d.tagline||'';
+      tl.style.display=d.tagline?'':'none';
+      // Meta
+      var meta=[];
+      if(d.vote_average>0)meta.push('⭐ '+d.vote_average.toFixed(1)+' ('+d.vote_count+'票)');
+      if(d.media_type==='movie'&&d.runtime>0)meta.push('⏱ '+d.runtime+'分钟');
+      if(d.status)meta.push('📌 '+d.status);
+      if(d.media_type==='tv'){
+        if(d.num_seasons>0)meta.push('📺 '+d.num_seasons+'季');
+        if(d.num_episodes>0)meta.push('🎞 '+d.num_episodes+'集');
+      }
+      document.getElementById('detail-meta').innerHTML=meta.map(function(m){return '<span>'+m+'</span>';}).join('');
+      // Genres
+      var genres=d.genres||[];
+      document.getElementById('detail-genres').innerHTML=genres.map(function(g){return '<span class="detail-genre-chip">'+g+'</span>';}).join('');
+      // Overview
+      document.getElementById('detail-overview').textContent=d.overview||'(暂无简介)';
+    }
+
+    function closeDetail(){
+      document.getElementById('detail-modal').style.display='none';
+      document.body.style.overflow='';
+      detailData=null;detailSeason=0;
+      document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.remove('selected');});
+    }
+
+    function detailGetResources(){
+      if(!detailData)return;
+      var query=detailData.title;
+      if(detailData.media_type==='tv'&&detailSeason>0)query+=' S'+String(detailSeason).padStart(2,'0');
+      goSearch(query,detailData.media_type==='movie'?'movie':'tv',false);
+    }
+
+    function detailSubscribe(){
+      if(!detailData)return;
+      var query=detailData.title;
+      if(detailData.media_type==='tv'&&detailSeason>0)query+=' S'+String(detailSeason).padStart(2,'0');
+      goSearch(query,detailData.media_type==='movie'?'movie':'tv',true);
+    }
+
+    function goSearch(query,category,subscribe){
+      var form=document.createElement('form');form.method='POST';form.action='/search';
+      var inp=document.createElement('input');inp.type='hidden';inp.name='q';inp.value=query;form.appendChild(inp);
+      var cat=document.createElement('input');cat.type='hidden';cat.name='category';cat.value=category;form.appendChild(cat);
+      if(subscribe){var s=document.createElement('input');s.type='hidden';s.name='subscribe';s.value='1';form.appendChild(s);}
+      document.body.appendChild(form);form.submit();
+    }
+
+    // Legacy step-confirm flow (kept for keyboard-only / accessibility fallback)
+    var selectedItem=null, selectedSeason=0;
     function showStep(id){document.querySelectorAll('.search-step').forEach(function(s){s.classList.remove('active');});var el=document.getElementById(id);if(el)el.classList.add('active');}
-
+    function backToTMDB(){showStep('step-tmdb');selectedItem=null;selectedSeason=0;closeDetail();}
     function doAggregatedSearch(){
       var query=selectedItem?selectedItem.title:document.getElementById('tmdb-query').value.trim();
       if(selectedItem&&selectedItem.media_type==='tv'&&selectedSeason>0)query+=' S'+String(selectedSeason).padStart(2,'0');
-      var form=document.createElement('form');form.method='POST';form.action='/search';
-      var input=document.createElement('input');input.type='hidden';input.name='q';input.value=query;form.appendChild(input);
-      if(selectedItem){var cat=document.createElement('input');cat.type='hidden';cat.name='category';cat.value=selectedItem.media_type==='movie'?'movie':'tv';form.appendChild(cat);}
-      document.body.appendChild(form);form.submit();
+      var cat=selectedItem?(selectedItem.media_type==='movie'?'movie':'tv'):'';
+      goSearch(query,cat,false);
     }
-
     function doAggregatedSearchRSS(){
       var query=selectedItem?selectedItem.title:document.getElementById('tmdb-query').value.trim();
       if(selectedItem&&selectedItem.media_type==='tv'&&selectedSeason>0)query+=' S'+String(selectedSeason).padStart(2,'0');
-      var form=document.createElement('form');form.method='POST';form.action='/search';
-      var input=document.createElement('input');input.type='hidden';input.name='q';input.value=query;form.appendChild(input);
-      if(selectedItem){var cat=document.createElement('input');cat.type='hidden';cat.name='category';cat.value=selectedItem.media_type==='movie'?'movie':'tv';form.appendChild(cat);}
-      var rss=document.createElement('input');rss.type='hidden';rss.name='subscribe';rss.value='1';form.appendChild(rss);
-      document.body.appendChild(form);form.submit();
+      var cat=selectedItem?(selectedItem.media_type==='movie'?'movie':'tv'):'';
+      goSearch(query,cat,true);
     }
+
     // --- Trending ---
     var trendingMovies=[],trendingTV=[],trendingPage=1,trendingTab='movies';
     function switchTrendingTab(tab){
@@ -2867,7 +2999,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         if(j.error){btn.textContent='📥 显示更多';btn.disabled=false;return;}
         var newMovies=j.movies||[],newTV=j.tv||[];
         if(!newMovies.length&&!newTV.length){btn.textContent='✓ 已全部加载';btn.disabled=true;return;}
-        // Append only new cards instead of re-rendering all (avoids scroll jump)
         var grid=document.getElementById('trending-grid');
         var frag=document.createDocumentFragment();
         var items=trendingTab==='movies'?newMovies:newTV;
@@ -2888,12 +3019,10 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }catch(e){btn.textContent='📥 显示更多';btn.disabled=false;}
     }
     loadTrending();
-    // Infinite scroll: load more when button is near viewport bottom
     var trendingObserver=new IntersectionObserver(function(entries){
       if(entries[0].isIntersecting){loadMoreTrending();}
     },{rootMargin:'200px'});
     var observeBtn=function(){var b=document.getElementById('btn-trending-more');if(b&&b.style.display!=='none')trendingObserver.observe(b);};
-    // Re-observe after each render
     var origRenderTrending=renderTrendingCards;
     renderTrendingCards=function(tab){origRenderTrending(tab);setTimeout(observeBtn,100);};
     // Back to top
@@ -4283,6 +4412,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/logs", s.authCheck(s.handleAPILogs))
 	mux.HandleFunc("/api/tmdb/search", s.authCheck(s.handleTMDBSearch))
 	mux.HandleFunc("/api/tmdb/trending", s.authCheck(s.handleTMDBTrending))
+	mux.HandleFunc("/api/tmdb/detail", s.authCheck(s.handleTMDBDetail))
 	mux.HandleFunc("/api/notify/test", s.authCheck(s.handleNotifyTest))
 	mux.HandleFunc("/api/lang", s.authCheck(s.handleAPILang))
 }
@@ -5345,6 +5475,73 @@ func (s *Server) handleTMDBTrending(w http.ResponseWriter, r *http.Request) {
 		tvOut = append(tvOut, result{TMDBID: t.TMDBID, Title: t.DisplayName(), Year: t.YearStr(), MediaType: "tv", Poster: t.PosterURL(), Overview: t.Overview})
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"movies": moviesOut, "tv": tvOut})
+}
+
+func (s *Server) handleTMDBDetail(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if media.DefaultTMDB == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "TMDB not configured"})
+		return
+	}
+	mediaType := r.URL.Query().Get("type")
+	idStr := r.URL.Query().Get("id")
+	if mediaType == "" || idStr == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "missing type or id"})
+		return
+	}
+	tmdbID, err := strconv.Atoi(idStr)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "invalid id"})
+		return
+	}
+	detail, err := media.DefaultTMDB.GetDetail(tmdbID, mediaType)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	// Build response
+	type seasonInfo struct {
+		SeasonNumber int `json:"season_number"`
+		EpisodeCount int `json:"episode_count"`
+	}
+	seasons := make([]seasonInfo, 0)
+	for _, s := range detail.Seasons {
+		if s.SeasonNumber > 0 {
+			seasons = append(seasons, seasonInfo{SeasonNumber: s.SeasonNumber, EpisodeCount: s.EpisodeCount})
+		}
+	}
+	genres := make([]string, 0)
+	for _, g := range detail.Genres {
+		genres = append(genres, g.Name)
+	}
+	title := detail.Title
+	if title == "" {
+		title = detail.Name
+	}
+	origTitle := detail.OriginalTitle
+	if origTitle == "" {
+		origTitle = detail.OriginalName
+	}
+	year := detail.YearStr()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":             detail.TMDBID,
+		"title":          title,
+		"original_title": origTitle,
+		"year":           year,
+		"media_type":     mediaType,
+		"poster":         detail.PosterURL(),
+		"backdrop":       detail.BackdropURL(),
+		"overview":       detail.Overview,
+		"tagline":        detail.Tagline,
+		"genres":         genres,
+		"vote_average":   detail.VoteAvg,
+		"vote_count":     detail.VoteCount,
+		"runtime":        detail.Runtime,
+		"status":         detail.Status,
+		"seasons":        seasons,
+		"num_seasons":    detail.NumSeasons,
+		"num_episodes":   detail.NumEps,
+	})
 }
 
 // buildAllTagsList returns tag strings as []string for JSON encoding
