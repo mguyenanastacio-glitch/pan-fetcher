@@ -2771,7 +2771,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
             </div>
             <div class="detail-actions">
               <button onclick="detailGetResources()" style="background:var(--accent);color:#fff;">🚀 获取资源</button>
-              <button onclick="detailSubscribe()" style="background:var(--accent-2);color:#fff;">📋 一键订阅</button>
             </div>
           </div>
         </div>
@@ -2918,13 +2917,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var query=detailData.title;
       if(detailData.media_type==='tv'&&detailSeason>0)query+=' S'+String(detailSeason).padStart(2,'0');
       goSearch(query,false);
-    }
-
-    function detailSubscribe(){
-      if(!detailData)return;
-      var query=detailData.title;
-      if(detailData.media_type==='tv'&&detailSeason>0)query+=' S'+String(detailSeason).padStart(2,'0');
-      goSearch(query,true);
     }
 
     function goSearch(query,subscribe){
