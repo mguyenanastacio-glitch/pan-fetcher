@@ -214,9 +214,11 @@ var rssJsonPath = "rss.json"
 
 // searchCache holds results for incremental loading
 var (
-	searchCacheMu sync.Mutex
-	searchCache   []indexer.SearchResult
-	searchCtx     searchContext
+	searchCacheMu  sync.Mutex
+	searchCache    []indexer.SearchResult // filtered by current keyword
+	searchCacheFull []indexer.SearchResult // all results, never filtered (for tag extraction & re-filter)
+	searchCtx      searchContext
+	filterKeyword  string // the keyword currently applied to searchCache
 )
 
 type searchContext struct {
@@ -2477,6 +2479,26 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var grp={};bar.querySelectorAll('span[data-cat]').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)'){var t=c.getAttribute('data-filter');var g=c.getAttribute('data-cat');if(t&&g){if(!grp[g])grp[g]=[];if(grp[g].indexOf(t)===-1)grp[g].push(t);}}});
       var parts=[];for(var g in grp){parts.push(g+':'+grp[g].join('|'));}return parts.join(' ');
     }
+    async function filterByChips(){
+      var kw=buildGroupKeyword();
+      var fd=new URLSearchParams();
+      var form=document.getElementById('search-form');
+      if(form){var fdx=new FormData(form);for(var k of fdx.keys()){if(k!=='keyword')fd.append(k,fdx.get(k));}}
+      fd.set('keyword',kw);fd.set('offset','0');
+      try{
+        var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
+        var j=await r.json();
+        if(!j.results||j.results.length===0){return;}
+        var tbody=document.querySelector('#search-results tbody');
+        if(!tbody)return;
+        tbody.innerHTML=j.results.map(function(item,i){return buildRowHTML(item,i,0);}).join('');
+        searchTotal=j.total||0;
+        currentPage=1;
+        totalPages=searchTotal>0?Math.ceil(searchTotal/pageSize):1;
+        renderPagination();
+        document.getElementById('search-results').scrollIntoView({block:'start'});
+      }catch(e){console.error(e);}
+    }
     function extractSeason(text){
       var n=0,cn={一:1,二:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10,十一:11,十二:12,十三:13,十四:14,十五:15,十六:16,十七:17,十八:18,十九:19,二十:20};
       var cm=text.match(/第([一二三四五六七八九十]+|\d+)\s*(季|期)/);if(cm)n=cn[cm[1]]||parseInt(cm[1])||0;
@@ -2544,7 +2566,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var cats={},co=[],cl={group:'👥 字幕组',source:'📡 来源',codec:'🎞 编码',resolution:'📐 分辨率',language:'🌐 语言',container:'📦 容器',season:'📅 季',other:'🏷 其他'};
       groups.forEach(function(g){var ck;if(catMap&&catMap[g])ck=catMap[g];else{var cl2=classifyTag(g);if(!cl2)return;ck=cl2.cat;}if(!cats[ck]){cats[ck]={label:cl[ck]||('🏷 '+ck),tags:[],key:ck};co.push(ck);}cats[ck].tags.push(g);});
       co.forEach(function(ck){var cat=cats[ck];var row=document.createElement('div');row.style.cssText='display:flex;flex-wrap:wrap;gap:4px;align-items:center;';var lbl=document.createElement('span');lbl.textContent=cat.label;lbl.style.cssText='font-size:10px;color:var(--muted);margin-right:2px;white-space:nowrap;opacity:0.7;cursor:pointer;';row.appendChild(lbl);var isOther=ck==='other';var otherWrap=null;if(isOther){otherWrap=document.createElement('span');otherWrap.style.cssText='display:none;';row.appendChild(otherWrap);lbl.textContent='🏷 其他('+cat.tags.length+') ▸';lbl.onclick=function(){var s=otherWrap.style.display==='none';otherWrap.style.display=s?'':'none';lbl.textContent='🏷 其他('+cat.tags.length+') '+(s?'▾':'▸');};}cat.tags.forEach(function(g){var ia=akwSet.indexOf(g.toLowerCase())!==-1;var c=mkChip(g,g,ia);c.setAttribute('data-cat',ck);(isOther&&otherWrap?otherWrap:row).appendChild(c);});bar.appendChild(row);});
-      bar.addEventListener('click',function(e){if(e.target.id==='chip-rss-btn')return;if(e.target.tagName!=='SPAN')return;var f=e.target.getAttribute('data-filter');if(f===undefined||f===null)return;if(f===''){var ha=false;bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')ha=true;});bar.querySelectorAll('span:not(#chip-rss-btn)').forEach(function(c){c.style.background='var(--bg)';c.style.color='';c.style.borderColor='var(--line)';});e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';updateRSSFilterTags([]);if(ha){var ke=document.getElementById('search-keyword');if(ke)ke.value='';var fm=document.getElementById('search-form');if(fm)fm.submit();}}else{var ia=e.target.style.background==='var(--accent)'||e.target.style.background==='rgb(59,130,246)';if(ia){e.target.style.background='var(--bg)';e.target.style.color='';e.target.style.borderColor='var(--line)';}else{e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';}var ac=bar.querySelector('span[data-filter=""]');if(ac){ac.style.background='var(--bg)';ac.style.color='';ac.style.borderColor='var(--line)';}var act=[];bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')act.push(c.getAttribute('data-filter'));});if(!act.length&&ac){ac.style.background='var(--accent)';ac.style.color='#fff';ac.style.borderColor='var(--accent)';}updateRSSFilterTags(act);var ke=document.getElementById('search-keyword');if(ke)ke.value=buildGroupKeyword();}});
+      bar.addEventListener('click',function(e){if(e.target.id==='chip-rss-btn')return;if(e.target.tagName!=='SPAN')return;var f=e.target.getAttribute('data-filter');if(f===undefined||f===null)return;if(f===''){var ha=false;bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')ha=true;});bar.querySelectorAll('span:not(#chip-rss-btn)').forEach(function(c){c.style.background='var(--bg)';c.style.color='';c.style.borderColor='var(--line)';});e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';updateRSSFilterTags([]);var ke2=document.getElementById('search-keyword');if(ke2)ke2.value='';if(ha){filterByChips();}}else{var ia=e.target.style.background==='var(--accent)'||e.target.style.background==='rgb(59,130,246)';if(ia){e.target.style.background='var(--bg)';e.target.style.color='';e.target.style.borderColor='var(--line)';}else{e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';}var ac=bar.querySelector('span[data-filter=""]');if(ac){ac.style.background='var(--bg)';ac.style.color='';ac.style.borderColor='var(--line)';}var act=[];bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')act.push(c.getAttribute('data-filter'));});if(!act.length&&ac){ac.style.background='var(--accent)';ac.style.color='#fff';ac.style.borderColor='var(--accent)';}updateRSSFilterTags(act);var ke=document.getElementById('search-keyword');if(ke)ke.value=buildGroupKeyword();filterByChips();}});
       container.insertBefore(bar,table);
     }
 
@@ -2916,6 +2938,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
         }
         if(!fd.get('q')){bar.innerHTML='<span style="color:var(--danger);">无搜索参数</span>';return;}
         fd.set('offset',(page-1)*pageSize);
+        fd.set('keyword',buildGroupKeyword());
         try{
           var r=await fetch('/search/more',{method:'POST',body:fd,headers:{'X-Requested-With':'XMLHttpRequest'}});
           var j=await r.json();
@@ -2925,6 +2948,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           var pageStart=(page-1)*pageSize;
           tbody.innerHTML=j.results.map(function(item,i){return buildRowHTML(item,i,pageStart);}).join('');
           currentPage=page;
+          searchTotal=j.total||0;
+          totalPages=searchTotal>0?Math.ceil(searchTotal/pageSize):1;
           buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),fd.get('q')||'',fd.get('category')||'');
           renderPagination();
           sessionStorage.setItem('pan-fetcher-page',JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
@@ -5329,6 +5354,45 @@ func isValidGroup(g string) bool {
 	return false
 }
 
+// applyKeywordFilter filters results using group-aware keyword matching.
+// Format: "group:tag1|tag2 othergroup:tag3"
+// Within each group: OR. Across groups: AND.
+// If keyword is empty, returns all results unchanged.
+func applyKeywordFilter(results []indexer.SearchResult, keyword string) []indexer.SearchResult {
+	kw := strings.TrimSpace(keyword)
+	if kw == "" {
+		return results
+	}
+	groups := strings.Fields(kw)
+	filtered := make([]indexer.SearchResult, 0, len(results))
+	for _, r := range results {
+		titleLower := strings.ToLower(r.Title)
+		match := true
+		for _, g := range groups {
+			if idx := strings.IndexByte(g, ':'); idx > 0 {
+				tags := strings.Split(g[idx+1:], "|")
+				grpMatch := false
+				for _, tag := range tags {
+					if strings.Contains(titleLower, strings.ToLower(tag)) {
+						grpMatch = true
+						break
+					}
+				}
+				if !grpMatch { match = false; break }
+			} else {
+				if !strings.Contains(titleLower, strings.ToLower(g)) {
+					match = false
+					break
+				}
+			}
+		}
+		if match {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
 func (s *Server) handleAPILogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	since := r.URL.Query().Get("since")
@@ -6026,50 +6090,20 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			pageSize = 50
 		}
 		searchCacheMu.Lock()
-		searchCache = dedupSlice(se.Results, nil)
+		searchCacheFull = dedupSlice(se.Results, nil)
 		// Extract group from first [...] or 【...】 in title (with validation)
 		groupRe := regexp.MustCompile(`^[[【]([^\]】]{1,40})[\]】]`)
-		for i := range searchCache {
-			if searchCache[i].Group == "" {
-				if m := groupRe.FindStringSubmatch(searchCache[i].Title); m != nil {
+		for i := range searchCacheFull {
+			if searchCacheFull[i].Group == "" {
+				if m := groupRe.FindStringSubmatch(searchCacheFull[i].Title); m != nil {
 					g := strings.TrimSpace(m[1])
-					if isValidGroup(g) { searchCache[i].Group = g }
+					if isValidGroup(g) { searchCacheFull[i].Group = g }
 				}
 			}
 		}
-		// Keyword filter
-		if kw := strings.TrimSpace(keyword); kw != "" {
-			// Group-aware filter: "group:tag1|tag2 group2:tag3"
-			// Within each group OR, across groups AND
-			groups := strings.Fields(kw)
-			filtered := make([]indexer.SearchResult, 0, len(searchCache))
-			for _, r := range searchCache {
-				titleLower := strings.ToLower(r.Title)
-				match := true
-				for _, g := range groups {
-					if idx := strings.IndexByte(g, ':'); idx > 0 {
-						tags := strings.Split(g[idx+1:], "|")
-						grpMatch := false
-						for _, tag := range tags {
-							if strings.Contains(titleLower, strings.ToLower(tag)) {
-								grpMatch = true
-								break
-							}
-						}
-						if !grpMatch { match = false; break }
-					} else {
-						if !strings.Contains(titleLower, strings.ToLower(g)) {
-							match = false
-							break
-						}
-					}
-				}
-				if match {
-					filtered = append(filtered, r)
-				}
-			}
-			searchCache = filtered
-		}
+		// Apply keyword filter onto searchCache (working set)
+		searchCache = applyKeywordFilter(searchCacheFull, keyword)
+		filterKeyword = keyword
 		searchCtx = searchContext{
 			Query:    q,
 			Category: category,
@@ -6081,9 +6115,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		searchCacheMu.Unlock()
 		data.PageSize = pageSize
 		data.SearchTotal = len(searchCache)
-		// Build all-tags JSON from full searchCache (after dedup & keyword filter)
-		data.AllTagsJSON = buildAllTagsJSON(searchCache)
-		data.AllGroupsJSON = buildAllGroupsJSON(searchCache)
+		// Build tag/group JSON from FULL cache (all results, not just filtered)
+		data.AllTagsJSON = buildAllTagsJSON(searchCacheFull)
+		data.AllGroupsJSON = buildAllGroupsJSON(searchCacheFull)
 		if len(searchCache) > pageSize {
 			data.SearchResults = searchCache[:pageSize]
 		} else {
@@ -6107,6 +6141,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	offset, _ := strconv.Atoi(r.FormValue("offset"))
+	keyword := strings.TrimSpace(r.FormValue("keyword"))
 
 	type apiResult struct {
 		Title       string `json:"title"`
@@ -6124,6 +6159,15 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 	pageSize := ctx.PageSize
 	if pageSize <= 0 {
 		pageSize = 50
+	}
+	// If keyword changed, re-filter from full cache
+	if keyword != filterKeyword {
+		if keyword == "" {
+			searchCache = searchCacheFull
+		} else {
+			searchCache = applyKeywordFilter(searchCacheFull, keyword)
+		}
+		filterKeyword = keyword
 	}
 	cached := searchCache
 	searchCacheMu.Unlock()
