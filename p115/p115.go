@@ -570,6 +570,40 @@ type SubInfo struct {
 	Enabled   bool
 }
 
+// matchKeyword checks if a title matches a keyword string using the same
+// group:tag1|tag2 format as applyKeywordFilter (space-separated groups,
+// colon-separated group name and pipe-separated tags within each group).
+// Groups are ANDed; tags within a group are ORed.
+func matchKeyword(title, keyword string) bool {
+	titleLower := strings.ToLower(title)
+	groups := strings.Fields(keyword)
+	for _, g := range groups {
+		if idx := strings.IndexByte(g, ':'); idx > 0 {
+			tags := strings.Split(g[idx+1:], "|")
+			grpMatch := false
+			for _, tag := range tags {
+				tag = strings.TrimSpace(tag)
+				if tag == "" {
+					continue
+				}
+				if strings.Contains(titleLower, strings.ToLower(tag)) {
+					grpMatch = true
+					break
+				}
+			}
+			if !grpMatch {
+				return false
+			}
+		} else {
+			// Legacy: plain keyword (no group prefix)
+			if !strings.Contains(titleLower, strings.ToLower(g)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // ProcessRSSFeed fetches an RSS feed, filters by keyword, and submits all matches.
 // Phase 1: lightweight info-hash extraction + dedup check (no torrent download).
 // Phase 2: resolve full magnet only for items that pass dedup.
@@ -592,19 +626,16 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, subKey string) []string {
 		title  string
 	}
 	var candidates []candidate
+	skippedKeyword := 0
 	skippedPhase1 := 0
 	skippedPhase2 := 0
 
 	for _, item := range feed.Items {
 		if keyword != "" {
-			titleLower := strings.ToLower(item.Title)
-			match := false
-			for _, line := range strings.Split(keyword, "\n") {
-				k := strings.TrimSpace(line)
-				if k == "" { continue }
-				if strings.Contains(titleLower, strings.ToLower(k)) { match = true; break }
+			if !matchKeyword(item.Title, keyword) {
+				skippedKeyword++
+				continue
 			}
-			if !match { continue }
 		}
 
 		// Phase 1: try lightweight info hash from text/URL (no .torrent download)
@@ -638,6 +669,9 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, subKey string) []string {
 		candidates = append(candidates, candidate{magnet: magnet, title: item.Title})
 	}
 
+	if skippedKeyword > 0 {
+		log.Printf("[feed] keyword filter skipped %d items", skippedKeyword)
+	}
 	if skippedPhase1 > 0 {
 		log.Printf("[feed] phase-1 dedup skipped %d (no download needed)", skippedPhase1)
 	}
@@ -645,7 +679,11 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, subKey string) []string {
 		log.Printf("[feed] phase-2 dedup skipped %d (torrent was downloaded but already cached)", skippedPhase2)
 	}
 	if len(candidates) == 0 {
-		log.Printf("[feed] all items already cached for keyword=%q in %s", keyword, rssURL)
+		if skippedKeyword > 0 && skippedPhase1 == 0 && skippedPhase2 == 0 {
+			log.Printf("[feed] no items matched keyword=%q in %s", keyword, rssURL)
+		} else {
+			log.Printf("[feed] all items already cached for keyword=%q in %s", keyword, rssURL)
+		}
 		return nil
 	}
 	log.Printf("[feed] found %d NEW items, submitting to cid=%s", len(candidates), cid)
