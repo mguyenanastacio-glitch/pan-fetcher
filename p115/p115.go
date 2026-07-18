@@ -573,12 +573,11 @@ type SubInfo struct {
 // ProcessRSSFeed fetches an RSS feed, filters by keyword, and submits all matches.
 // Phase 1: lightweight info-hash extraction + dedup check (no torrent download).
 // Phase 2: resolve full magnet only for items that pass dedup.
-func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) []string {
-	// Fallback: extract keyword from RSS URL if filter is empty
-	if keyword == "" {
-		if u, err := url.Parse(rssURL); err == nil {
-			keyword = u.Query().Get("keyword")
-		}
+func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, subKey string) []string {
+	// Extract keyword from RSS URL
+	keyword := ""
+	if u, err := url.Parse(rssURL); err == nil {
+		keyword = u.Query().Get("keyword")
 	}
 	feed := rsssite.GetFeed(rssURL)
 	if feed == nil {

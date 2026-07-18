@@ -40,7 +40,7 @@ import (
 
 type Agent interface {
 	AddMagnetTask([]string, string, string) error
-	ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) []string
+	ProcessRSSFeed(rssURL, cid, savepath, subKey string) []string
 	OfflineClear(int) error
 	ListTasks() ([]p115pkg.TaskItem, error)
 	ListDir(string) ([]p115pkg.DirEntry, error)
@@ -4169,7 +4169,7 @@ func (s *Server) autoRunSubscriptions() {
 					}()
 					if s.Agent != nil && e.Cid != "" {
 						before := globalDedup.SubCount(subKey)
-						names := s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, e.Filter, subKey)
+						names := s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, subKey)
 						after := globalDedup.SubCount(subKey)
 						newItems := after - before
 						if newItems > 0 {
@@ -4587,7 +4587,7 @@ func (s *Server) handleRSSFeed(w http.ResponseWriter, r *http.Request) {
 		s.renderMsg(w, "", "err_rss_empty")
 		return
 	}
-	go s.Agent.ProcessRSSFeed(rssURL, cid, savepath, keyword, rssURL)
+	go s.Agent.ProcessRSSFeed(rssURL, cid, savepath, rssURL)
 	log.Printf("[feed] web triggered: %s keyword=%q cid=%s savepath=%q", rssURL, keyword, cid, savepath)
 	s.renderMsgf(w, "quick_started_fmt", rssURL)
 }
@@ -7341,7 +7341,7 @@ func (s *Server) handleSubsRun(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		before := globalDedup.SubCount(subKey)
-		names := s.Agent.ProcessRSSFeed(rssURL, cid, savepath, filter, subKey)
+		names := s.Agent.ProcessRSSFeed(rssURL, cid, savepath, subKey)
 		after := globalDedup.SubCount(subKey)
 		newItems := after - before
 		if newItems > 0 {
