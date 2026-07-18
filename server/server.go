@@ -7249,10 +7249,11 @@ func (s *Server) pageDataWithCache(page, message, errMsg string) dashboardData {
 		}
 	}
 	data := dashboardData{
-		Message: message,
-		Error:   errMsg,
-		Lang:    lang,
-		T:       langMap(lang),
+		Message:     message,
+		Error:       errMsg,
+		Lang:        lang,
+		T:           langMap(lang),
+		AllTagsJSON: template.JS("[]"),
 	}
 	ws := s.loadWebSettings()
 	data.PageSize = ws.PageSize
