@@ -164,6 +164,7 @@ type dashboardData struct {
 	PageSize      int
 	SearchErrors  map[string]string
 	AllTagsJSON   template.JS // JSON of all unique tags from full search results
+	AllGroupsJSON template.JS // JSON of all validated group names from full search results
 	SearchCategory string
 	SearchSort     string
 	SearchIndexers []string
@@ -2511,7 +2512,13 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
 
     function buildGroupChips(container,table,rssQuery,rssCategory){
-      // Always scan table rows to populate _serverGroups (needed by classifyTag for group detection)
+      // Pre-populate _serverGroups from server-validated groups (covers ALL pages)
+      var allGroupsFromServer={{.AllGroupsJSON}};
+      window._serverGroups={};
+      if(allGroupsFromServer&&allGroupsFromServer.length){
+        allGroupsFromServer.forEach(function(g){window._serverGroups[g]=true;});
+      }
+      // Scan table rows to add any additional groups from current page
       var clientGroups=tagRowsWithGroup(table);
       var allTagsFromServer={{.AllTagsJSON}};
       var groups;
@@ -5262,6 +5269,25 @@ func buildAllTagsJSON(results []indexer.SearchResult) template.JS {
 	return template.JS(b)
 }
 
+// buildAllGroupsJSON collects validated group names from full search results
+// Used by client to pre-populate _serverGroups so classifyTag works across all pages
+func buildAllGroupsJSON(results []indexer.SearchResult) template.JS {
+	groupRe := regexp.MustCompile(`^[[【]([^\]】]{1,40})[\]】]`)
+	seen := make(map[string]bool)
+	var groups []string
+	for _, r := range results {
+		if m := groupRe.FindStringSubmatch(r.Title); m != nil {
+			g := strings.TrimSpace(m[1])
+			g = strings.ReplaceAll(g, "DBD制作组", "DBD-Raws")
+			g = strings.ReplaceAll(g, "桜都字幕組", "桜都字幕组")
+			lk := strings.ToLower(g)
+			if !seen[lk] && isValidGroup(g) { seen[lk] = true; groups = append(groups, g) }
+		}
+	}
+	b, _ := json.Marshal(groups)
+	return template.JS(b)
+}
+
 // isValidGroup checks if a first-bracket tag looks like a fansub group name
 func isValidGroup(g string) bool {
 	g = strings.TrimSpace(g)
@@ -6057,6 +6083,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		data.SearchTotal = len(searchCache)
 		// Build all-tags JSON from full searchCache (after dedup & keyword filter)
 		data.AllTagsJSON = buildAllTagsJSON(searchCache)
+		data.AllGroupsJSON = buildAllGroupsJSON(searchCache)
 		if len(searchCache) > pageSize {
 			data.SearchResults = searchCache[:pageSize]
 		} else {
@@ -7272,7 +7299,8 @@ func (s *Server) pageDataWithCache(page, message, errMsg string) dashboardData {
 		Error:       errMsg,
 		Lang:        lang,
 		T:           langMap(lang),
-		AllTagsJSON: template.JS("[]"),
+		AllTagsJSON:   template.JS("[]"),
+		AllGroupsJSON: template.JS("[]"),
 	}
 	ws := s.loadWebSettings()
 	data.PageSize = ws.PageSize
