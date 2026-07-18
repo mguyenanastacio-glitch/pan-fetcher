@@ -4341,7 +4341,8 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jackettActiveMu.Unlock()
 		jc := s.jackettConfig()
-		if jr, err := jackett.Search(jc, q, nil, 1000); err == nil {
+		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
+			log.Printf("[rss] Jackett returned %d results for q=%q", len(jr), q)
 			for _, jr := range jr {
 				if !jackettActiveSet[jr.Tracker] {
 					continue
@@ -4377,6 +4378,8 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 					PublishDate: pubDate,
 				})
 			}
+		} else if err != nil {
+			log.Printf("[rss] Jackett search error: %v", err)
 		}
 	}
 
