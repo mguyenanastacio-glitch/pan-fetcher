@@ -2427,8 +2427,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     <script>
     document.getElementById('search-form').addEventListener('submit',function(){
       var kw=document.getElementById('search-keyword'),bar=document.getElementById('group-chip-bar');
-      if(kw&&bar){var tags=[];bar.querySelectorAll('span[data-cat]').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)'){var t=c.getAttribute('data-filter');if(t&&tags.indexOf(t)===-1)tags.push(t);}});
-      if(tags.length)kw.value=tags.join(' ');}
+      if(kw&&bar){var grp={};bar.querySelectorAll('span[data-cat]').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)'){var t=c.getAttribute('data-filter');var g=c.getAttribute('data-cat');if(t&&g){if(!grp[g])grp[g]=[];if(grp[g].indexOf(t)===-1)grp[g].push(t);}}});
+      var parts=[];for(var g in grp){parts.push(g+':'+grp[g].join('|'));}if(parts.length)kw.value=parts.join(' ');}
     });
     var searchTotal={{.SearchTotal}};
     var pageSize={{.PageSize}};
@@ -2469,7 +2469,12 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var set=activeRSSFilters.map(function(t){return t.toLowerCase();});
       bar.querySelectorAll('span[data-filter]:not([data-filter=""])').forEach(function(c){var a=set.indexOf(c.getAttribute('data-filter').toLowerCase())!==-1;c.style.background=a?'var(--accent)':'var(--bg)';c.style.color=a?'#fff':'';c.style.borderColor=a?'var(--accent)':'var(--line)';});
       var all=bar.querySelector('span[data-filter=""]');if(all){all.style.background=activeRSSFilters.length?'var(--bg)':'var(--accent)';all.style.color=activeRSSFilters.length?'':'#fff';}
-      var kw=document.getElementById('search-keyword');if(kw)kw.value=activeRSSFilters.join(' ');
+      var kw=document.getElementById('search-keyword');if(kw)kw.value=buildGroupKeyword();
+    }
+    function buildGroupKeyword(){
+      var bar=document.getElementById('group-chip-bar');if(!bar)return activeRSSFilters.join(' ');
+      var grp={};bar.querySelectorAll('span[data-cat]').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)'){var t=c.getAttribute('data-filter');var g=c.getAttribute('data-cat');if(t&&g){if(!grp[g])grp[g]=[];if(grp[g].indexOf(t)===-1)grp[g].push(t);}}});
+      var parts=[];for(var g in grp){parts.push(g+':'+grp[g].join('|'));}return parts.join(' ');
     }
     function extractSeason(text){
       var n=0,cn={一:1,二:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10,十一:11,十二:12,十三:13,十四:14,十五:15,十六:16,十七:17,十八:18,十九:19,二十:20};
@@ -2522,17 +2527,17 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     function renderChipBar(container,table,groups,catMap,rssQuery,rssCategory){
       var bar=document.createElement('div');bar.id='group-chip-bar';bar.style.cssText='display:flex;flex-direction:column;gap:5px;margin-bottom:10px;';
-      var kwEl=document.getElementById('search-keyword');var hasKw=kwEl&&kwEl.value.trim()!=='';var akw=kwEl?kwEl.value.trim().toLowerCase():'';var akwSet=akw?akw.split(/[\s,]+/):[];
+      var kwEl=document.getElementById('search-keyword');var hasKw=kwEl&&kwEl.value.trim()!=='';var akw=kwEl?kwEl.value.trim().toLowerCase():'';var akwSet=[];if(akw){var ps=akw.split(/\s+/);ps.forEach(function(p){var ci=p.indexOf(':');if(ci>0){p.substring(ci+1).split('|').forEach(function(t){akwSet.push(t);});}else{akwSet.push(p);}});}
       if(hasKw){activeRSSFilters=kwEl.value.trim().split(/[\s,]+/).filter(Boolean);updateRSSFilterTags(activeRSSFilters);}
       function mkChip(t,f,isA){var c=document.createElement('span');c.textContent=t;c.setAttribute('data-filter',f);c.style.cssText='padding:3px 10px;border-radius:12px;font-size:11px;white-space:nowrap;cursor:pointer;background:'+(isA?'var(--accent)':'var(--bg)')+';color:'+(isA?'#fff':'')+';border:1px solid '+(isA?'var(--accent)':'var(--line)');return c;}
       var top=document.createElement('div');top.style.cssText='display:flex;flex-wrap:wrap;gap:6px;align-items:center;';top.appendChild(mkChip('全部','',!hasKw));
       var rss=document.createElement('span');rss.textContent='+ RSS';rss.id='chip-rss-btn';rss.style.cssText='padding:4px 14px;border-radius:14px;background:var(--accent-2);color:#fff;cursor:pointer;font-size:12px;margin-left:auto;';
-      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-category').value=rssCategory||'';document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);if(rssCategory)u+='&category='+encodeURIComponent(rssCategory);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=(activeRSSFilters||[]).join(' ');if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;document.getElementById('sub-filter').value=(activeRSSFilters||[]).join('\n');updateRSSFilterTags(activeRSSFilters||[]);sf.style.display='flex';}};
+      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-category').value=rssCategory||'';document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);if(rssCategory)u+='&category='+encodeURIComponent(rssCategory);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=buildGroupKeyword();if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;document.getElementById('sub-filter').value=(activeRSSFilters||[]).join('\n');updateRSSFilterTags(activeRSSFilters||[]);sf.style.display='flex';}};
       top.appendChild(rss);bar.appendChild(top);
       var cats={},co=[],cl={group:'👥 字幕组',source:'📡 来源',codec:'🎞 编码',resolution:'📐 分辨率',language:'🌐 语言',container:'📦 容器',season:'📅 季',other:'🏷 其他'};
       groups.forEach(function(g){var ck;if(catMap&&catMap[g])ck=catMap[g];else{var cl2=classifyTag(g);if(!cl2)return;ck=cl2.cat;}if(!cats[ck]){cats[ck]={label:cl[ck]||('🏷 '+ck),tags:[],key:ck};co.push(ck);}cats[ck].tags.push(g);});
       co.forEach(function(ck){var cat=cats[ck];var row=document.createElement('div');row.style.cssText='display:flex;flex-wrap:wrap;gap:4px;align-items:center;';var lbl=document.createElement('span');lbl.textContent=cat.label;lbl.style.cssText='font-size:10px;color:var(--muted);margin-right:2px;white-space:nowrap;opacity:0.7;cursor:pointer;';row.appendChild(lbl);var isOther=ck==='other';var otherWrap=null;if(isOther){otherWrap=document.createElement('span');otherWrap.style.cssText='display:none;';row.appendChild(otherWrap);lbl.textContent='🏷 其他('+cat.tags.length+') ▸';lbl.onclick=function(){var s=otherWrap.style.display==='none';otherWrap.style.display=s?'':'none';lbl.textContent='🏷 其他('+cat.tags.length+') '+(s?'▾':'▸');};}cat.tags.forEach(function(g){var ia=akwSet.indexOf(g.toLowerCase())!==-1;var c=mkChip(g,g,ia);c.setAttribute('data-cat',ck);(isOther&&otherWrap?otherWrap:row).appendChild(c);});bar.appendChild(row);});
-      bar.addEventListener('click',function(e){if(e.target.id==='chip-rss-btn')return;if(e.target.tagName!=='SPAN')return;var f=e.target.getAttribute('data-filter');if(f===undefined||f===null)return;if(f===''){var ha=false;bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')ha=true;});bar.querySelectorAll('span:not(#chip-rss-btn)').forEach(function(c){c.style.background='var(--bg)';c.style.color='';c.style.borderColor='var(--line)';});e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';updateRSSFilterTags([]);if(ha){var ke=document.getElementById('search-keyword');if(ke)ke.value='';var fm=document.getElementById('search-form');if(fm)fm.submit();}}else{var ia=e.target.style.background==='var(--accent)'||e.target.style.background==='rgb(59,130,246)';if(ia){e.target.style.background='var(--bg)';e.target.style.color='';e.target.style.borderColor='var(--line)';}else{e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';}var ac=bar.querySelector('span[data-filter=""]');if(ac){ac.style.background='var(--bg)';ac.style.color='';ac.style.borderColor='var(--line)';}var act=[];bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')act.push(c.getAttribute('data-filter'));});if(!act.length&&ac){ac.style.background='var(--accent)';ac.style.color='#fff';ac.style.borderColor='var(--accent)';}updateRSSFilterTags(act);}});
+      bar.addEventListener('click',function(e){if(e.target.id==='chip-rss-btn')return;if(e.target.tagName!=='SPAN')return;var f=e.target.getAttribute('data-filter');if(f===undefined||f===null)return;if(f===''){var ha=false;bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')ha=true;});bar.querySelectorAll('span:not(#chip-rss-btn)').forEach(function(c){c.style.background='var(--bg)';c.style.color='';c.style.borderColor='var(--line)';});e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';updateRSSFilterTags([]);if(ha){var ke=document.getElementById('search-keyword');if(ke)ke.value='';var fm=document.getElementById('search-form');if(fm)fm.submit();}}else{var ia=e.target.style.background==='var(--accent)'||e.target.style.background==='rgb(59,130,246)';if(ia){e.target.style.background='var(--bg)';e.target.style.color='';e.target.style.borderColor='var(--line)';}else{e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';}var ac=bar.querySelector('span[data-filter=""]');if(ac){ac.style.background='var(--bg)';ac.style.color='';ac.style.borderColor='var(--line)';}var act=[];bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')act.push(c.getAttribute('data-filter'));});if(!act.length&&ac){ac.style.background='var(--accent)';ac.style.color='#fff';ac.style.borderColor='var(--accent)';}updateRSSFilterTags(act);var ke=document.getElementById('search-keyword');if(ke)ke.value=buildGroupKeyword();}});
       container.insertBefore(bar,table);
     }
 
@@ -6008,15 +6013,29 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		// Keyword filter
 		if kw := strings.TrimSpace(keyword); kw != "" {
-			kws := strings.Fields(kw)
+			// Group-aware filter: "group:tag1|tag2 group2:tag3"
+			// Within each group OR, across groups AND
+			groups := strings.Fields(kw)
 			filtered := make([]indexer.SearchResult, 0, len(searchCache))
 			for _, r := range searchCache {
 				titleLower := strings.ToLower(r.Title)
 				match := true
-				for _, k := range kws {
-					if !strings.Contains(titleLower, strings.ToLower(k)) {
-						match = false
-						break
+				for _, g := range groups {
+					if idx := strings.IndexByte(g, ':'); idx > 0 {
+						tags := strings.Split(g[idx+1:], "|")
+						grpMatch := false
+						for _, tag := range tags {
+							if strings.Contains(titleLower, strings.ToLower(tag)) {
+								grpMatch = true
+								break
+							}
+						}
+						if !grpMatch { match = false; break }
+					} else {
+						if !strings.Contains(titleLower, strings.ToLower(g)) {
+							match = false
+							break
+						}
 					}
 				}
 				if match {
