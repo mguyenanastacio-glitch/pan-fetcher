@@ -2524,10 +2524,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     var activeRSSFilters=[];
 
     function updateRSSFilterTags(tags){
-      var d=document.getElementById('sub-filter-tags'),ta=document.getElementById('sub-filter');
-      if(!d||!ta)return;
-      if(!tags.length){d.innerHTML='<span style="color:var(--muted);">未选择</span>';ta.value='';}
-      else{d.innerHTML=tags.map(function(t){return '<span style="padding:2px 10px;border-radius:12px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;" onclick="event.stopPropagation();var i=activeRSSFilters.indexOf(\''+t.replace(/'/g,"\\'")+'\');if(i!==-1){activeRSSFilters.splice(i,1);updateRSSFilterTags(activeRSSFilters);updateChipBarFromFilters();}">'+t+' &times;</span>';}).join('');ta.value=tags.join('\n');}
       window.activeRSSFilters=tags;
     }
     function updateChipBarFromFilters(){
@@ -2630,7 +2626,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       function mkChip(t,f,isA){var c=document.createElement('span');c.textContent=t;c.setAttribute('data-filter',f);c.style.cssText='padding:3px 10px;border-radius:12px;font-size:11px;white-space:nowrap;cursor:pointer;background:'+(isA?'var(--accent)':'var(--bg)')+';color:'+(isA?'#fff':'')+';border:1px solid '+(isA?'var(--accent)':'var(--line)');return c;}
       var top=document.createElement('div');top.style.cssText='display:flex;flex-wrap:wrap;gap:6px;align-items:center;';top.appendChild(mkChip('全部','',!hasKw));
       var rss=document.createElement('span');rss.textContent='+ RSS';rss.id='chip-rss-btn';rss.style.cssText='padding:4px 14px;border-radius:14px;background:var(--accent-2);color:#fff;cursor:pointer;font-size:12px;margin-left:auto;';
-      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-category').value=rssCategory||'';document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);if(rssCategory)u+='&category='+encodeURIComponent(rssCategory);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=buildGroupKeyword();if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;document.getElementById('sub-filter').value=(activeRSSFilters||[]).join('\n');updateRSSFilterTags(activeRSSFilters||[]);sf.style.display='flex';}};
+      rss.onclick=function(){var sf=document.getElementById('sub-form');if(sf){var q=rssQuery||'';document.getElementById('sub-query').value=q;document.getElementById('sub-category').value=rssCategory||'';document.getElementById('sub-name').value=q;var u='/rss/search?q='+encodeURIComponent(q);if(rssCategory)u+='&category='+encodeURIComponent(rssCategory);var form=document.getElementById('search-form');if(form){var fd=new FormData(form);var s=fd.get('sort');if(s)u+='&sort='+encodeURIComponent(s);var idx=fd.getAll('indexer');if(idx.length)u+='&indexers='+encodeURIComponent(idx.join(','));}var fl=buildGroupKeyword();if(fl)u+='&keyword='+encodeURIComponent(fl);document.getElementById('sub-url').value=u;sf.style.display='flex';}};
       top.appendChild(rss);bar.appendChild(top);
       var cats={},co=[],cl={group:'👥 字幕组',source:'📡 来源',codec:'🎞 编码',resolution:'📐 分辨率',language:'🌐 语言',container:'📦 容器',season:'📅 季',other:'🏷 其他'};
       groups.forEach(function(g){var ck;if(catMap&&catMap[g])ck=catMap[g];else{var cl2=classifyTag(g);if(!cl2)return;ck=cl2.cat;}if(!cats[ck]){cats[ck]={label:cl[ck]||('🏷 '+ck),tags:[],key:ck};co.push(ck);}cats[ck].tags.push(g);});
@@ -3717,11 +3713,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
           <div style="flex:2;min-width:160px;"><label style="font-size:12px;">RSS 地址</label><input name="url" id="sub-url" style="font-size:13px;"></div>
           <div style="flex:1;min-width:110px;"><label style="font-size:12px;">115 目录 ID (可选)</label><div style="display:flex;gap:4px;"><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;flex:1;"><button type="button" onclick="browseDirsFor('sub-cid')" title="浏览115目录" style="font-size:13px;padding:4px 8px;margin:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;cursor:pointer;">📂</button></div></div>
           <div style="flex:1;min-width:90px;"><label style="font-size:12px;">子目录 (可选)</label><input name="savepath" placeholder="savepath" style="font-size:13px;"></div>
-        </div>
-        <div style="margin-top:8px;">
-          <label style="font-size:12px;">标签（点击下方分组添加）</label>
-          <div id="sub-filter-tags" style="display:flex;flex-wrap:wrap;gap:4px;min-height:28px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);font-size:12px;color:var(--muted);">未选择</div>
-          <textarea name="filter" id="sub-filter" rows="2" placeholder="每行一个关键词" style="display:none;"></textarea>
         </div>
         <div style="margin-top:10px;text-align:right;">
           <button type="submit" style="margin-top:0;background:var(--accent-2);">添加订阅</button>
