@@ -2544,10 +2544,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
 
     // Mutable tag lists: initially from server, updated by filterByChips
-    window._currentAllTags={{.AllTagsJSON}};
-    window._currentAllGroups={{.AllGroupsJSON}};
-    if(!Array.isArray(window._currentAllTags))window._currentAllTags=[];
-    if(!Array.isArray(window._currentAllGroups))window._currentAllGroups=[];
+    window._currentAllTags={{if .AllTagsJSON}}{{.AllTagsJSON}}{{else}}[]{{end}};
+    window._currentAllGroups={{if .AllGroupsJSON}}{{.AllGroupsJSON}}{{else}}[]{{end}};
 
     function buildGroupChips(container,table,rssQuery,rssCategory){
       var allGroups=window._currentAllGroups||[];
