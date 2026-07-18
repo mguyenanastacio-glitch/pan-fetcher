@@ -2957,7 +2957,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       function clearSearch(){
         sessionStorage.removeItem('pan-fetcher-page');
         sessionStorage.removeItem('pan-fetcher-query');
-        location.href='/search';
+        // Also clear persisted search cache so reload doesn't restore old results
+        fetch('/search/clear-cache',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}}).then(function(){location.href='/search';});
       }
       var pendingMagnet='';
 
@@ -4249,6 +4250,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/settings/update", s.authCheck(s.handleDoUpdate))
 	mux.HandleFunc("/search", s.authCheck(s.handleSearch))
 	mux.HandleFunc("/search/more", s.authCheck(s.handleSearchMore))
+	mux.HandleFunc("/search/clear-cache", s.authCheck(s.handleSearchClearCache))
 	mux.HandleFunc("/discover", s.authCheck(s.handleDiscover))
 	mux.HandleFunc("/indexers", s.authCheck(s.handleIndexers))
 	mux.HandleFunc("/indexers/test", s.authCheck(s.handleIndexerTest))
@@ -6338,6 +6340,16 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 		"all_tags":   buildAllTagsList(cached),
 		"all_groups": buildAllGroupsList(cached),
 	})
+}
+
+func (s *Server) handleSearchClearCache(w http.ResponseWriter, r *http.Request) {
+	os.Remove(searchCacheFile)
+	searchCacheMu.Lock()
+	searchCache = nil
+	searchCacheFull = nil
+	filterKeyword = ""
+	searchCacheMu.Unlock()
+	w.WriteHeader(http.StatusOK)
 }
 
 // searchNextPage fetches the next page of results from local indexers and Jackett.
