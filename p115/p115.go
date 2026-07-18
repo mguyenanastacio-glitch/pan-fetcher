@@ -590,8 +590,15 @@ func (ag *Agent) ProcessRSSFeed(rssURL, cid, savepath, keyword, subKey string) [
 	skippedPhase2 := 0
 
 	for _, item := range feed.Items {
-		if keyword != "" && !strings.Contains(strings.ToLower(item.Title), strings.ToLower(keyword)) {
-			continue
+		if keyword != "" {
+			titleLower := strings.ToLower(item.Title)
+			match := false
+			for _, line := range strings.Split(keyword, "\n") {
+				k := strings.TrimSpace(line)
+				if k == "" { continue }
+				if strings.Contains(titleLower, strings.ToLower(k)) { match = true; break }
+			}
+			if !match { continue }
 		}
 
 		// Phase 1: try lightweight info hash from text/URL (no .torrent download)
