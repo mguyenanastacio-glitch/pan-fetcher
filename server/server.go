@@ -4147,9 +4147,9 @@ func (s *Server) autoRunSubscriptions() {
 					continue
 				}
 				subKey := e.Name
-				url := e.URL
-				if strings.HasPrefix(url, "/") {
-					url = fmt.Sprintf("http://127.0.0.1:%d%s", s.Port, url)
+				feedURL := e.URL
+				if strings.HasPrefix(feedURL, "/") {
+					feedURL = fmt.Sprintf("http://127.0.0.1:%d%s", s.Port, feedURL)
 				}
 
 				// Check retry state
@@ -4160,7 +4160,7 @@ func (s *Server) autoRunSubscriptions() {
 					}
 				}
 
-				log.Printf("[auto-sub] running: %s (%s)", subKey, url)
+				log.Printf("[auto-sub] running: %s (%s)", subKey, feedURL)
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -4168,8 +4168,17 @@ func (s *Server) autoRunSubscriptions() {
 						}
 					}()
 					if s.Agent != nil && e.Cid != "" {
+						// Backward compat: old subs have filter in e.Filter but not in URL
+						rssURL := feedURL
+						if e.Filter != "" && !strings.Contains(rssURL, "keyword=") {
+							if strings.Contains(rssURL, "?") {
+								rssURL += "&keyword=" + url.QueryEscape(e.Filter)
+							} else {
+								rssURL += "?keyword=" + url.QueryEscape(e.Filter)
+							}
+						}
 						before := globalDedup.SubCount(subKey)
-						names := s.Agent.ProcessRSSFeed(url, e.Cid, e.SavePath, subKey)
+						names := s.Agent.ProcessRSSFeed(rssURL, e.Cid, e.SavePath, subKey)
 						after := globalDedup.SubCount(subKey)
 						newItems := after - before
 						if newItems > 0 {
