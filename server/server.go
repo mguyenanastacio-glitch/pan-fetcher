@@ -2675,7 +2675,8 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       .back-to-top:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.2);}
       .back-to-top.show{display:flex;}
       /* detail modal */
-      .detail-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.75);overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:24px 0;animation:fadeIn .2s ease;}
+      .detail-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.75);overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:24px 0;animation:fadeIn .2s ease;scrollbar-width:none;-ms-overflow-style:none;}
+      .detail-overlay::-webkit-scrollbar{display:none;}
       .detail-card{position:relative;width:min(780px,94vw);background:var(--card);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);margin:0 auto;}
       .detail-close{position:absolute;top:12px;right:12px;z-index:10;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.45);color:#fff;border:none;font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.2s;}
       .detail-close:hover{background:rgba(0,0,0,.7);}
@@ -2869,6 +2870,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       fillDetailCard(d);
       document.querySelector('.detail-actions').style.display='none';
       document.getElementById('detail-modal').style.display='flex';
+      document.body.style.overflow='hidden';
     }
 
     function pickSeason(season,el){
@@ -2884,6 +2886,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       document.querySelector('.detail-actions').style.display='';
       detailSeason=season||0;
       document.getElementById('detail-modal').style.display='flex';
+      document.body.style.overflow='hidden';
     }
 
     function fillDetailCard(d){
@@ -2918,6 +2921,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
 
     function closeDetail(){
       document.getElementById('detail-modal').style.display='none';
+      document.body.style.overflow='';
       detailData=null;detailSeason=0;
       document.querySelectorAll('.tmdb-card').forEach(function(c){c.classList.remove('selected');});
     }
@@ -4477,7 +4481,7 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		s.jackettActiveMu.Unlock()
 		jc := s.jackettConfig()
-		if jr, err := jackett.Search(jc, q, nil, 0); err == nil {
+		if jr, err := jackett.Search(jc, q, indexer.TorznabCategoryIDs(category), 0); err == nil {
 			for _, jr := range jr {
 				if len(indexers) == 0 && !jackettActiveSet[jr.Tracker] {
 					continue
@@ -4522,6 +4526,11 @@ func (s *Server) handleRssSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Apply keyword filter using same group-aware logic as search
 	se.Results = applyKeywordFilter(se.Results, r.URL.Query().Get("keyword"))
+
+	// Apply category filter (post-search fallback)
+	if category != "" {
+		se.Results = indexer.FilterByCategory(se.Results, category)
+	}
 
 	// Build RSS XML
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
@@ -6341,7 +6350,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				defer wg.Done()
 				if s.JackettURL != "" && s.JackettAPIKey != "" && (len(indexers) == 0 || hasJackettSelection) {
 					jc := s.jackettConfig()
-					sr.jackett, sr.jerr = jackett.Search(jc, q, nil, 0)
+					sr.jackett, sr.jerr = jackett.Search(jc, q, indexer.TorznabCategoryIDs(category), 0)
 				}
 			}()
 
@@ -6401,6 +6410,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				se.Errors = make(map[string]string)
 			}
 			se.Errors["jackett"] = sr.jerr.Error()
+		}
+		// Apply category filter (post-search fallback for trackers that don't support it)
+		if category != "" {
+			se.Results = indexer.FilterByCategory(se.Results, category)
 		}
 		data.SearchQuery = q
 		data.SearchKeyword = keyword
@@ -6618,7 +6631,7 @@ func (s *Server) searchNextPage(ctx searchContext) []indexer.SearchResult {
 
 		jackettOff := (ctx.NextPage - 1) * 100
 		jc := s.jackettConfig()
-		if jr, err := jackett.Search(jc, ctx.Query, nil, jackettOff); err == nil {
+		if jr, err := jackett.Search(jc, ctx.Query, indexer.TorznabCategoryIDs(ctx.Category), jackettOff); err == nil {
 			for _, r := range jr {
 				trackerLower := strings.ToLower(r.Tracker)
 				if !jackettActiveSet[trackerLower] {
