@@ -214,12 +214,69 @@ var rssJsonPath = "rss.json"
 
 // searchCache holds results for incremental loading
 var (
-	searchCacheMu  sync.Mutex
-	searchCache    []indexer.SearchResult // filtered by current keyword
+	searchCacheMu   sync.Mutex
+	searchCache     []indexer.SearchResult // filtered by current keyword
 	searchCacheFull []indexer.SearchResult // all results, never filtered (for tag extraction & re-filter)
-	searchCtx      searchContext
-	filterKeyword  string // the keyword currently applied to searchCache
+	searchCtx       searchContext
+	filterKeyword   string // the keyword currently applied to searchCache
 )
+
+const searchCacheFile = "search-cache.json"
+
+type persistedSearch struct {
+	Query     string                 `json:"query"`
+	Category  string                 `json:"category"`
+	Sort      string                 `json:"sort"`
+	Indexers  []string               `json:"indexers"`
+	Keyword   string                 `json:"keyword"`
+	PageSize  int                    `json:"page_size"`
+	Results   []indexer.SearchResult `json:"results"`
+}
+
+func saveSearchCache() {
+	searchCacheMu.Lock()
+	defer searchCacheMu.Unlock()
+	ps := persistedSearch{
+		Query:    searchCtx.Query,
+		Category: searchCtx.Category,
+		Sort:     searchCtx.Sort,
+		Indexers: searchCtx.Indexers,
+		Keyword:  filterKeyword,
+		PageSize: searchCtx.PageSize,
+		Results:  searchCacheFull,
+	}
+	b, _ := json.MarshalIndent(ps, "", "  ")
+	os.WriteFile(searchCacheFile, b, 0644)
+}
+
+func loadSearchCache() *persistedSearch {
+	b, err := os.ReadFile(searchCacheFile)
+	if err != nil {
+		return nil
+	}
+	var ps persistedSearch
+	if err := json.Unmarshal(b, &ps); err != nil {
+		return nil
+	}
+	if len(ps.Results) == 0 {
+		return nil
+	}
+	// Restore globals
+	searchCacheMu.Lock()
+	searchCacheFull = ps.Results
+	searchCache = applyKeywordFilter(searchCacheFull, ps.Keyword)
+	filterKeyword = ps.Keyword
+	searchCtx = searchContext{
+		Query:    ps.Query,
+		Category: ps.Category,
+		Sort:     ps.Sort,
+		Indexers: ps.Indexers,
+		NextPage: 2,
+		PageSize: ps.PageSize,
+	}
+	searchCacheMu.Unlock()
+	return &ps
+}
 
 type searchContext struct {
 	Query     string
@@ -5944,6 +6001,30 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	data := s.pageData("", "")
 	data.Page = "search"
 
+	// Restore previous search results on GET (page load / refresh)
+	if r.Method != http.MethodPost {
+		if ps := loadSearchCache(); ps != nil {
+			data.SearchQuery = ps.Query
+			data.SearchKeyword = ps.Keyword
+			data.SearchCategory = ps.Category
+			data.SearchSort = ps.Sort
+			data.SearchIndexers = ps.Indexers
+			data.PageSize = ps.PageSize
+			if data.PageSize <= 0 { data.PageSize = 50 }
+			data.SearchTotal = len(searchCache)
+			data.AllTagsJSON = buildAllTagsJSON(searchCacheFull)
+			data.AllGroupsJSON = buildAllGroupsJSON(searchCacheFull)
+			if len(searchCache) > data.PageSize {
+				data.SearchResults = searchCache[:data.PageSize]
+			} else {
+				data.SearchResults = searchCache
+			}
+			if ps.Query != "" {
+				data.RssURL = buildRssURL(s.Port, ps.Query, ps.Indexers, ps.Category)
+			}
+		}
+	}
+
 	// Populate indexer list for filter checkboxes
 	if s.IdxMgr != nil {
 		data.IndexerList = s.IdxMgr.List()
@@ -6179,6 +6260,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if q != "" {
 			data.RssURL = buildRssURL(s.Port, q, indexers, category)
 		}
+		// Persist search results for next page load
+		saveSearchCache()
 	}
 	dashboardTemplate.Execute(w, data)
 }
