@@ -2498,7 +2498,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
     }
     function tagRowsWithGroup(table){
       if(!table)return[];var rows=table.querySelectorAll('tbody tr');if(!rows.length)return[];var groups=[],seen={};
-      window._serverGroups={};
+      window._serverGroups=window._serverGroups||{};
       rows.forEach(function(tr){var g=tr.getAttribute('data-group');if(g)window._serverGroups[g]=true;});
       rows.forEach(function(tr){var g=tr.getAttribute('data-group');if(g)window._serverGroups[g]=true;
       var td=tr.querySelector('td:nth-child(2)');var text=td?td.textContent.trim():(tr.getAttribute('data-title')||'');var allTags=[];var re=/[\[【]([^\]】]{1,40})[\]】]/g;var m;while((m=re.exec(text))!==null){var tag=m[1].trim().replace(/^DBD制作组$/,'DBD-Raws').replace(/^桜都字幕組$/,'桜都字幕组');if(!tag||tag.length>40||/^\d+\(\d+\)$/.test(tag)||/^\d{1,4}$/.test(tag)||/^(vol|volume|disc|cd|part|pt|ep)[\s.]*\d+$/i.test(tag))continue;tag=tag.replace(/\s+/g,' ').trim();if(tag)allTags.push(tag);}
