@@ -10,6 +10,8 @@
   <a href="https://golang.org"><img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go" alt="go"></a>
 </p>
 
+<p align="center"><strong>中文</strong> | <a href="#english">English</a></p>
+
 ---
 
 自动追番 / 追剧工具。搜索资源 → 添加订阅 → 自动推送 115 离线下载，Web 面板管理全流程。支持 Cookies / 扫码登录，所有操作均通过 115 官方 API 进行。
@@ -169,7 +171,9 @@ Go 1.25 · SQLite · 单体 `html/template`（零前端依赖） · [elevengo](h
 
 ---
 
-## English {#english}
+## English
+
+<p align="center"><a href="#">中文</a> | <strong>English</strong></p>
 
 Automated media downloader for 115 cloud storage. Search across BT indexers, subscribe to RSS feeds, auto-push to offline tasks — all managed via a clean Web UI.
 
@@ -182,8 +186,8 @@ Automated media downloader for 115 cloud storage. Search across BT indexers, sub
 - **📂 File Manager** — Browse and manage 115 cloud files.
 - **📊 Dashboard** — Stats overview, recent items.
 - **🔔 Notifications** — WeChat Work webhook with per-event toggles.
-- **� Runtime Log** — Real-time log output with auto-refresh.
-- **�🐳 Docker** — One-command deploy via `docker-compose`.
+- **📜 Runtime Log** — Real-time log output with auto-refresh.
+- **🐳 Docker** — One-command deploy via `docker-compose`.
 - **⚙️ Web Admin** — CN/EN bilingual, HTTPS, password auth, in-app update.
 
 ### Quick Start
