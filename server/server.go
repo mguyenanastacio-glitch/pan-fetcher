@@ -2255,6 +2255,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data.JackettURL = ws.JackettURL
 		data.JackettAPIKey = ws.JackettAPIKey
 		data.JackettAdminPassword = ws.JackettAdminPassword
+		data.TMDBAPIKey = ws.TMDBAPIKey
 		if s.Agent != nil {
 			data.Settings = s.Agent.GetSettings()
 		}
@@ -2296,6 +2297,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	data.JackettURL = ws.JackettURL
 	data.JackettAPIKey = ws.JackettAPIKey
 	data.JackettAdminPassword = ws.JackettAdminPassword
+	data.TMDBAPIKey = ws.TMDBAPIKey
 	if s.Agent != nil {
 		data.Settings = s.Agent.GetSettings()
 	}
