@@ -20,7 +20,7 @@ search:
     - path: "topics/list"
   inputs:
     keyword: "{{ .Keywords }}"
-    sort_id: "0"
+    sort_id: "{{ if eq .Sort \"size\" }}3{{ else if eq .Sort \"seeds\" }}1{{ else }}0{{ end }}"
     page: "{{.Page}}"
   rows:
     selector: "table#topic_list tbody tr"

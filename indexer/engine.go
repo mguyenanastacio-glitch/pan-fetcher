@@ -428,6 +428,7 @@ func (e *Engine) buildSearchURL(def *IndexerDefinition, req SearchRequest) (stri
 		"Keywords": req.Query,
 		"Keyword":  req.Query,
 		"Page":     req.Page,
+		"Sort":     req.Sort,
 		"Query": map[string]string{
 			"Keywords": req.Query,
 			"Keyword":  req.Query,
