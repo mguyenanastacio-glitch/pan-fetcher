@@ -24,11 +24,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Delete existing release if present (re-tagging scenario)
           gh release delete "${{ github.ref_name }}" --yes --cleanup-tag 2>/dev/null || true
-          # Recreate with annotated tag notes
           gh release create "${{ github.ref_name }}" \
-            --notes-from-tag \
+            --notes-file ".github/RELEASE_NOTES.md" \
             --title "${{ github.ref_name }}" \
             --prerelease=${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
 
