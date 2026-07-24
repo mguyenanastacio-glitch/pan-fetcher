@@ -140,7 +140,6 @@ cd pan-fetcher && go build -ldflags="-s -w" -o pan-fetcher .
 pan-fetcher server                     # 启动 Web 面板
 pan-fetcher magnet --link "magnet:..." # 添加离线任务
 pan-fetcher fs ls [dir]                # 浏览网盘目录
-pan-fetcher fs shell                   # 交互式 Shell
 ```
 
 ## 🔧 配置参考
@@ -241,7 +240,6 @@ Also available on [GHCR](https://github.com/mguyenanastacio-glitch/pan-fetcher/p
 pan-fetcher server                     # Start web panel
 pan-fetcher magnet --link "magnet:..." # Add offline task
 pan-fetcher fs ls [dir]                # List cloud directory
-pan-fetcher fs shell                   # Interactive shell
 ```
 
 ### Configuration
