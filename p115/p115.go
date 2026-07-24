@@ -365,7 +365,13 @@ func (ag *Agent) AddMagnetTask(tasks []string, cid string, savepath string) erro
 		case rsssite.TaskURLEd2k:
 			ed2ks.urls = append(ed2ks.urls, raw)
 		case rsssite.TaskURLHttp:
-			httpURLs.urls = append(httpURLs.urls, raw)
+			// Try to convert HTTP URL to magnet (download .torrent, extract info hash)
+			if normalized := rsssite.NormalizeTaskURL(raw, ""); !strings.HasPrefix(strings.ToLower(normalized), "http") {
+				magnets.urls = append(magnets.urls, normalized)
+				log.Printf("[task] http converted to magnet: %s\n", raw)
+			} else {
+				httpURLs.urls = append(httpURLs.urls, raw)
+			}
 		default:
 			log.Printf("[task] unknown type, skipped: %s\n", raw)
 			skipped++
