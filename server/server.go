@@ -1012,6 +1012,12 @@ func New(agent *p115pkg.Agent, port int) *Server {
 	s.JackettURL = ws.JackettURL
 	s.JackettAPIKey = ws.JackettAPIKey
 	s.JackettAdminPassword = ws.JackettAdminPassword
+	// Restore language preference from persisted settings
+	if ws.Lang != "" && s.Agent != nil {
+		st := s.Agent.GetSettings()
+		st.Lang = ws.Lang
+		s.Agent.UpdateSettings(st)
+	}
 	// Apply proxy to Jackett client (same as engine)
 	cfg, _, _ := config.LoadWithOptions(config.CLIParams{}, config.LoadOptions{})
 	if cfg.Proxy.HTTP != "" {
@@ -2877,6 +2883,8 @@ func (s *Server) handleAPILang(w http.ResponseWriter, r *http.Request) {
 		st.Lang = lang
 		s.Agent.UpdateSettings(st)
 	}
+	// Set cookie for login page language consistency
+	http.SetCookie(w, &http.Cookie{Name: "r2c_lang", Value: lang, Path: "/", MaxAge: 365 * 24 * 3600})
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprint(w, `{"ok":true}`)
 }

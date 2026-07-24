@@ -1,7 +1,8 @@
 package server
 
-import ("html/template"
-"strings"
+import (
+	"html/template"
+	"strings"
 )
 
 
@@ -1466,14 +1467,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       async function addTaskWithBrowse(magnet){
         pendingMagnet=magnet;
-        browseCallback=function(id){closeModal();doAddTask(id);};
+        browseCallback=function(id){var sp=document.getElementById('browse-subdir')?.value?.trim()||'';closeModal();doAddTask(id,sp);};
         browseDirs('0');
       }
-      async function doAddTask(cid){
+      async function doAddTask(cid,savepath){
         closeModal();
         try{
           var body='tasks='+encodeURIComponent(pendingMagnet);
           if(cid&&cid!=='0')body+='&cid='+encodeURIComponent(cid);
+          if(savepath)body+='&savepath='+encodeURIComponent(savepath);
           var r=await fetch('/add',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body});
           var j=await r.json();
           if(j.status==='ok'){alertModal('{{index .T "task_added"}}');}else{alertModal(j.message||'{{index .T "add_failed"}}');}
@@ -1507,7 +1509,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       function updateBrowseModal(title,body,pid){
         document.getElementById('g-modal-title').textContent=title;
-        document.getElementById('g-modal-body').innerHTML=body;
+        document.getElementById('g-modal-body').innerHTML=body+'<div style="margin-top:10px;"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">子目录 (可选):</label><input id="browse-subdir" type="text" placeholder="新建子文件夹名称" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;"></div>';
         var btns=document.getElementById('g-modal-btns');
         btns.innerHTML='<button onclick="browseCallback(\''+pid+'\')" style="margin:0;padding:6px 16px;background:var(--accent-2);">{{index .T "select_current_dir"}}</button><button onclick="closeModal()" style="margin:0;padding:6px 16px;background:var(--danger);">{{index .T "close_btn"}}</button>';
         document.getElementById('g-modal').style.display='flex';
