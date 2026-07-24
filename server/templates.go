@@ -1467,6 +1467,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       async function addTaskWithBrowse(magnet){
         pendingMagnet=magnet;
+        window._browseShowSubdir=true;
         browseCallback=function(id){var sp=document.getElementById('browse-subdir')?.value?.trim()||'';closeModal();doAddTask(id,sp);};
         browseDirs('0');
       }
@@ -1484,7 +1485,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       var browseTargetId='sub-cid';
       var browseCallback=null;
-      function browseDirsFor(targetId){browseTargetId=targetId;browseCallback=function(id){document.getElementById(targetId).value=id;closeModal();};browseDirs('0');}
+      function browseDirsFor(targetId){browseTargetId=targetId;window._browseShowSubdir=false;browseCallback=function(id){document.getElementById(targetId).value=id;closeModal();};browseDirs('0');}
       async function browseDirs(pid){
         if(!pid)pid='0';
         try{
@@ -1509,7 +1510,11 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       function updateBrowseModal(title,body,pid){
         document.getElementById('g-modal-title').textContent=title;
-        document.getElementById('g-modal-body').innerHTML=body+'<div style="margin-top:10px;"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">{{index .T "subdir_opt"}}:</label><input id="browse-subdir" type="text" placeholder="{{index .T "subdir_opt"}}" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;"></div>';
+        var subdirHTML='';
+        if(window._browseShowSubdir){
+          subdirHTML='<div style="margin-top:10px;"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">{{index .T "subdir_opt"}}:</label><input id="browse-subdir" type="text" placeholder="{{index .T "subdir_opt"}}" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;"></div>';
+        }
+        document.getElementById('g-modal-body').innerHTML=body+subdirHTML;
         var btns=document.getElementById('g-modal-btns');
         btns.innerHTML='<button onclick="browseCallback(\''+pid+'\')" style="margin:0;padding:6px 16px;background:var(--accent-2);">{{index .T "select_current_dir"}}</button><button onclick="closeModal()" style="margin:0;padding:6px 16px;background:var(--danger);">{{index .T "close_btn"}}</button>';
         document.getElementById('g-modal').style.display='flex';
