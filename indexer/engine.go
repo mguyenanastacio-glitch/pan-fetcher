@@ -857,3 +857,8 @@ func sortResults(results []SearchResult, sortBy string) {
 	})
 }
 
+// SortResults is the exported wrapper for sorting search results.
+func SortResults(results []SearchResult, sortBy string) {
+	sortResults(results, sortBy)
+}
+

@@ -6451,6 +6451,7 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 	}
 	offset, _ := strconv.Atoi(r.FormValue("offset"))
 	keyword := strings.TrimSpace(r.FormValue("keyword"))
+	sortBy := strings.TrimSpace(r.FormValue("sort"))
 
 	type apiResult struct {
 		Title       string `json:"title"`
@@ -6477,6 +6478,21 @@ func (s *Server) handleSearchMore(w http.ResponseWriter, r *http.Request) {
 			searchCache = applyKeywordFilter(searchCacheFull, keyword)
 		}
 		filterKeyword = keyword
+	}
+	// If sort changed, re-sort the full cache and re-apply keyword
+	if sortBy != "" && sortBy != ctx.Sort {
+		// Make a copy and sort it
+		sortedFull := make([]indexer.SearchResult, len(searchCacheFull))
+		copy(sortedFull, searchCacheFull)
+		indexer.SortResults(sortedFull, sortBy)
+		searchCacheFull = sortedFull
+		// Re-apply keyword filter on newly sorted cache
+		if filterKeyword == "" {
+			searchCache = searchCacheFull
+		} else {
+			searchCache = applyKeywordFilter(searchCacheFull, filterKeyword)
+		}
+		ctx.Sort = sortBy
 	}
 	cached := searchCache
 	searchCacheMu.Unlock()
