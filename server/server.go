@@ -3332,23 +3332,19 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			data.SearchTotal = len(searchCache)
 			data.AllTagsJSON = buildAllTagsJSON(searchCacheFull)
 			data.AllGroupsJSON = buildAllGroupsJSON(searchCacheFull)
-			// Re-format SizeFmt/DateFmt for cached results (fields not persisted)
-			for i := range searchCacheFull {
-				searchCacheFull[i].SizeFmt = formatSize(searchCacheFull[i].Size)
-				if !searchCacheFull[i].PublishDate.IsZero() {
-					searchCacheFull[i].DateFmt = searchCacheFull[i].PublishDate.Format("2006-01-02 15:04")
-				}
-			}
-			// Re-apply keyword filter on formatted cache
-			if ps.Keyword != "" {
-				searchCache = applyKeywordFilter(searchCacheFull, ps.Keyword)
-			} else {
-				searchCache = searchCacheFull
-			}
 			if len(searchCache) > data.PageSize {
 				data.SearchResults = searchCache[:data.PageSize]
 			} else {
 				data.SearchResults = searchCache
+			}
+			// Ensure formatted fields for display (not persisted in cache)
+			for i := range data.SearchResults {
+				if data.SearchResults[i].SizeFmt == "" {
+					data.SearchResults[i].SizeFmt = formatSize(data.SearchResults[i].Size)
+				}
+				if data.SearchResults[i].DateFmt == "" && !data.SearchResults[i].PublishDate.IsZero() {
+					data.SearchResults[i].DateFmt = data.SearchResults[i].PublishDate.Format("2006-01-02 15:04")
+				}
 			}
 			if ps.Query != "" {
 				data.RssURL = buildRssURL(s.Port, ps.Query, ps.Indexers)
