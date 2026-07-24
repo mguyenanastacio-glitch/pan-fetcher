@@ -28,7 +28,7 @@ search:
     title:
       selector: "td.title"
     category:
-      selector: "td:nth-child(1) a"
+      selector: "td:nth-child(2) a"
       attribute: href
     download:
       selector: "a[href^=\"magnet:?\"]"
@@ -39,7 +39,10 @@ search:
     size:
       selector: "td:nth-child(5)"
     date:
-      selector: "td:nth-child(2) span"
+      selector: "td:nth-child(1)"
+      filters:
+        - name: regexp
+          args: ["\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}"]
     seeders:
       selector: "td:nth-child(6)"
     leechers:
