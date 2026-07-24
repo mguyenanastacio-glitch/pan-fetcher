@@ -2495,7 +2495,6 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       var searchFormData=new URLSearchParams(new FormData(document.getElementById('search-form'))).toString();
       sessionStorage.setItem('pan-fetcher-query',searchFormData);
       sessionStorage.setItem(pgKey,JSON.stringify({currentPage:currentPage,totalPages:totalPages,searchTotal:searchTotal,pageSize:pageSize}));
-      setTimeout(function(){buildGroupChips(document.getElementById('search-results-wrap'),document.getElementById('search-results'),'{{.SearchQuery}}');},0);
       {{else}}
       var savedQuery=sessionStorage.getItem('pan-fetcher-query');
       var savedPage=sessionStorage.getItem(pgKey);
@@ -2621,6 +2620,15 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       bar.addEventListener('click',function(e){if(e.target.id==='chip-rss-btn')return;if(e.target.tagName!=='SPAN')return;var f=e.target.getAttribute('data-filter');if(f===undefined||f===null)return;if(f===''){var ha=false;bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')ha=true;});bar.querySelectorAll('span:not(#chip-rss-btn)').forEach(function(c){c.style.background='var(--bg)';c.style.color='';c.style.borderColor='var(--line)';});e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';updateRSSFilterTags([]);var ke2=document.getElementById('search-keyword');if(ke2)ke2.value='';}else{var ia=e.target.style.background==='var(--accent)'||e.target.style.background==='rgb(59,130,246)';if(ia){e.target.style.background='var(--bg)';e.target.style.color='';e.target.style.borderColor='var(--line)';}else{e.target.style.background='var(--accent)';e.target.style.color='#fff';e.target.style.borderColor='var(--accent)';}var ac=bar.querySelector('span[data-filter=""]');if(ac){ac.style.background='var(--bg)';ac.style.color='';ac.style.borderColor='var(--line)';}var act=[];bar.querySelectorAll('span:not(#chip-rss-btn):not([data-filter=""])').forEach(function(c){if(c.style.background==='var(--accent)'||c.style.background==='rgb(59,130,246)')act.push(c.getAttribute('data-filter'));});if(!act.length&&ac){ac.style.background='var(--accent)';ac.style.color='#fff';ac.style.borderColor='var(--accent)';}updateRSSFilterTags(act);var ke=document.getElementById('search-keyword');if(ke)ke.value=buildGroupKeyword();}});
       container.insertBefore(bar,table);
     }
+
+    // Initialize chip bar on page load if search results present
+    (function(){
+      var wrap=document.getElementById('search-results-wrap');
+      var tbl=document.getElementById('search-results');
+      if(wrap&&tbl&&tbl.querySelectorAll('tbody tr').length){
+        buildGroupChips(wrap,tbl,document.getElementById('search-q')?.value||'');
+      }
+    })();
 
     </script>
 
