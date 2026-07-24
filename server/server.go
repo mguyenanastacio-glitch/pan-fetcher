@@ -6398,6 +6398,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			pageSize = 50
 		}
 		searchCacheMu.Lock()
+		// Re-sort combined local + Jackett results after merge
+		indexer.SortResults(se.Results, sortBy)
 		searchCacheFull = dedupSlice(se.Results, nil)
 		// Extract group from first [...] or 【...】 in title (with validation)
 		groupRe := regexp.MustCompile(`^[[【]([^\]】]{1,40})[\]】]`)
