@@ -1509,7 +1509,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
       }
       function updateBrowseModal(title,body,pid){
         document.getElementById('g-modal-title').textContent=title;
-        document.getElementById('g-modal-body').innerHTML=body+'<div style="margin-top:10px;"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">子目录 (可选):</label><input id="browse-subdir" type="text" placeholder="新建子文件夹名称" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;"></div>';
+        document.getElementById('g-modal-body').innerHTML=body+'<div style="margin-top:10px;"><label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">{{index .T "subdir_opt"}}:</label><input id="browse-subdir" type="text" placeholder="{{index .T "subdir_opt"}}" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;"></div>';
         var btns=document.getElementById('g-modal-btns');
         btns.innerHTML='<button onclick="browseCallback(\''+pid+'\')" style="margin:0;padding:6px 16px;background:var(--accent-2);">{{index .T "select_current_dir"}}</button><button onclick="closeModal()" style="margin:0;padding:6px 16px;background:var(--danger);">{{index .T "close_btn"}}</button>';
         document.getElementById('g-modal').style.display='flex';
@@ -2128,18 +2128,18 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(template.F
   <div id="sub-form" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:998;align-items:center;justify-content:center;" onclick="if(event.target===this)document.getElementById('sub-form').style.display='none'">
     <div style="background:#fff;border-radius:16px;padding:24px;width:92%;max-width:600px;max-height:85vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.2);" onclick="event.stopPropagation()">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h3 style="margin:0;">📌 添加 RSS 订阅</h3>
+        <h3 style="margin:0;">{{index .T "add_rss_sub_title"}}</h3>
         <button onclick="document.getElementById('sub-form').style.display='none'" style="background:none;border:none;font-size:20px;cursor:pointer;padding:0;color:var(--muted);">×</button>
       </div>
       <form action="/search/subscribe" method="post">
         <input type="hidden" name="query" id="sub-query">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-          <div style="flex:2;min-width:120px;"><label style="font-size:12px;">名称</label><input name="name" id="sub-name" style="font-size:13px;"></div>
-          <div style="flex:2;min-width:160px;"><label style="font-size:12px;">RSS 地址</label><input name="url" id="sub-url" style="font-size:13px;"></div>
-          <div style="flex:1;min-width:200px;"><label style="font-size:12px;">115 目录 ID / 子目录 (可选)</label><div style="display:flex;gap:4px;"><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;flex:1;"><input name="savepath" placeholder="子目录" style="font-size:13px;flex:1;"><button type="button" onclick="browseDirsFor('sub-cid')" title="浏览115目录" style="font-size:13px;padding:4px 8px;margin:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;cursor:pointer;">📂</button></div></div>
+          <div style="flex:2;min-width:120px;"><label style="font-size:12px;">{{index .T "sub_name_label"}}</label><input name="name" id="sub-name" style="font-size:13px;"></div>
+          <div style="flex:2;min-width:160px;"><label style="font-size:12px;">{{index .T "rss_addr_label"}}</label><input name="url" id="sub-url" style="font-size:13px;"></div>
+          <div style="flex:1;min-width:200px;"><label style="font-size:12px;">{{index .T "dir_id_opt"}} / {{index .T "subdir_opt"}}</label><div style="display:flex;gap:4px;"><input name="cid" id="sub-cid" placeholder="cid" style="font-size:13px;flex:1;"><input name="savepath" placeholder="{{index .T "subdir_opt"}}" style="font-size:13px;flex:1;"><button type="button" onclick="browseDirsFor('sub-cid')" title="{{index .T "browse_btn"}}" style="font-size:13px;padding:4px 8px;margin:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;cursor:pointer;">{{index .T "browse_btn"}}</button></div></div>
         </div>
         <div style="margin-top:10px;text-align:right;">
-          <button type="submit" style="margin-top:0;background:var(--accent-2);">添加订阅</button>
+          <button type="submit" style="margin-top:0;background:var(--accent-2);">{{index .T "add_sub_btn"}}</button>
         </div>
       </form>
     </div>
